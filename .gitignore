@@ -1,0 +1,14 @@
+# Ambiente
+.env
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Dados do usuário (nunca versionar)
+data/
+*.db
+*.xlsx
