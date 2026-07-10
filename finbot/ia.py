@@ -1,18 +1,22 @@
-"""Chamadas à API do Claude: leitura de notas fiscais, interpretação de
-mensagens e respostas a perguntas sobre as finanças."""
+"""Camada de IA: prompts e escolha do provedor (Claude ou Gemini).
+
+O provedor é escolhido pelas variáveis de ambiente:
+- IA_PROVIDER=claude|gemini força um provedor específico;
+- caso contrário, usa o Claude se ANTHROPIC_API_KEY existir, senão o Gemini
+  (que tem camada gratuita) se GEMINI_API_KEY existir.
+"""
 
 from __future__ import annotations
 
-import base64
+import os
 from datetime import date
+from types import ModuleType
 from typing import Literal, Optional
 
-from anthropic import AsyncAnthropic
 from pydantic import BaseModel
 
+from . import ia_claude, ia_gemini
 from .db import Cartao
-
-MODELO = "claude-opus-4-8"
 
 CATEGORIAS = [
     "alimentação",
@@ -27,14 +31,20 @@ CATEGORIAS = [
     "outros",
 ]
 
-_client: Optional[AsyncAnthropic] = None
 
-
-def _cliente() -> AsyncAnthropic:
-    global _client
-    if _client is None:
-        _client = AsyncAnthropic()
-    return _client
+def _backend() -> ModuleType:
+    escolha = os.environ.get("IA_PROVIDER", "").strip().lower()
+    if escolha in ("claude", "anthropic"):
+        return ia_claude
+    if escolha == "gemini":
+        return ia_gemini
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return ia_claude
+    if os.environ.get("GEMINI_API_KEY"):
+        return ia_gemini
+    raise RuntimeError(
+        "Nenhuma chave de IA configurada (ANTHROPIC_API_KEY ou GEMINI_API_KEY)."
+    )
 
 
 class GastoExtraido(BaseModel):
@@ -88,31 +98,18 @@ async def extrair_de_foto(
     hoje: date,
 ) -> GastoExtraido:
     """Lê uma foto de nota fiscal/comprovante e extrai os dados do gasto."""
-    conteudo: list[dict] = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": media_type,
-                "data": base64.standard_b64encode(imagem).decode("ascii"),
-            },
-        },
-        {
-            "type": "text",
-            "text": (
-                "Extraia os dados desta nota fiscal ou comprovante.\n"
-                + (f"Legenda enviada pelo usuário: {legenda}" if legenda else "O usuário não enviou legenda.")
-            ),
-        },
-    ]
-    resposta = await _cliente().messages.parse(
-        model=MODELO,
-        max_tokens=2048,
-        system=_instrucoes_extracao(cartoes, hoje),
-        messages=[{"role": "user", "content": conteudo}],
-        output_format=GastoExtraido,
+    texto = "Extraia os dados desta nota fiscal ou comprovante.\n" + (
+        f"Legenda enviada pelo usuário: {legenda}"
+        if legenda
+        else "O usuário não enviou legenda."
     )
-    return resposta.parsed_output
+    return await _backend().estruturado(
+        system=_instrucoes_extracao(cartoes, hoje),
+        texto=texto,
+        modelo=GastoExtraido,
+        imagem=imagem,
+        media_type=media_type,
+    )
 
 
 async def interpretar_texto(
@@ -121,62 +118,46 @@ async def interpretar_texto(
     hoje: date,
 ) -> Interpretacao:
     """Decide se uma mensagem de texto registra um gasto ou faz uma pergunta."""
-    resposta = await _cliente().messages.parse(
-        model=MODELO,
-        max_tokens=2048,
-        system=(
-            _instrucoes_extracao(cartoes, hoje)
-            + "\nClassifique a mensagem do usuário:\n"
-            "- 'registrar_gasto': ele relata um gasto que fez (ex.: 'gastei 50 "
-            "no mercado no nubank', 'paguei 120 de luz'). Preencha o campo "
-            "gasto. Se não houver data, use a de hoje.\n"
-            "- 'pergunta': ele pergunta algo sobre seus gastos, contas ou "
-            "vencimentos.\n"
-            "- 'outro': qualquer outra coisa (saudações, etc.)."
-        ),
-        messages=[{"role": "user", "content": texto}],
-        output_format=Interpretacao,
+    system = (
+        _instrucoes_extracao(cartoes, hoje)
+        + "\nClassifique a mensagem do usuário:\n"
+        "- 'registrar_gasto': ele relata um gasto que fez (ex.: 'gastei 50 "
+        "no mercado no nubank', 'paguei 120 de luz'). Preencha o campo "
+        "gasto. Se não houver data, use a de hoje.\n"
+        "- 'pergunta': ele pergunta algo sobre seus gastos, contas ou "
+        "vencimentos.\n"
+        "- 'outro': qualquer outra coisa (saudações, etc.)."
     )
-    return resposta.parsed_output
+    return await _backend().estruturado(
+        system=system, texto=texto, modelo=Interpretacao
+    )
 
 
 async def responder_pergunta(pergunta: str, contexto_financeiro: str) -> str:
     """Responde uma pergunta livre usando o retrato atual das finanças."""
-    resposta = await _cliente().messages.create(
-        model=MODELO,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=(
-            "Você é um assistente financeiro pessoal no Telegram. Responda em "
-            "português do Brasil, de forma direta e amigável, usando APENAS os "
-            "dados abaixo. Valores em reais. Se os dados não permitirem "
-            "responder, diga o que falta.\n\n"
-            "=== DADOS FINANCEIROS DO USUÁRIO ===\n"
-            f"{contexto_financeiro}"
-        ),
-        messages=[{"role": "user", "content": pergunta}],
+    system = (
+        "Você é um assistente financeiro pessoal no Telegram. Responda em "
+        "português do Brasil, de forma direta e amigável, usando APENAS os "
+        "dados abaixo. Valores em reais. Se os dados não permitirem "
+        "responder, diga o que falta.\n\n"
+        "=== DADOS FINANCEIROS DO USUÁRIO ===\n"
+        f"{contexto_financeiro}"
     )
-    return "".join(b.text for b in resposta.content if b.type == "text").strip()
+    return await _backend().gerar_texto(system, pergunta)
 
 
 async def redigir_resumo(dados: str, periodo: str) -> str:
     """Transforma as estatísticas calculadas em um resumo amigável com dicas."""
-    resposta = await _cliente().messages.create(
-        model=MODELO,
-        max_tokens=4096,
-        thinking={"type": "adaptive"},
-        system=(
-            "Você é um assistente financeiro pessoal no Telegram. Escreva em "
-            "português do Brasil. Com base APENAS nos dados fornecidos, redija "
-            f"um resumo {periodo} curto e organizado com:\n"
-            "1. Total gasto no período e comparação com a média;\n"
-            "2. Maiores categorias e cartões/contas;\n"
-            "3. Onde dá para economizar (valores concretos, ex.: 'reduzindo X "
-            "você economizaria R$ Y');\n"
-            "4. Próximos vencimentos, se houver.\n"
-            "Use no máximo ~15 linhas, com emojis com moderação. Não invente "
-            "números que não estejam nos dados."
-        ),
-        messages=[{"role": "user", "content": dados}],
+    system = (
+        "Você é um assistente financeiro pessoal no Telegram. Escreva em "
+        "português do Brasil. Com base APENAS nos dados fornecidos, redija "
+        f"um resumo {periodo} curto e organizado com:\n"
+        "1. Total gasto no período e comparação com a média;\n"
+        "2. Maiores categorias e cartões/contas;\n"
+        "3. Onde dá para economizar (valores concretos, ex.: 'reduzindo X "
+        "você economizaria R$ Y');\n"
+        "4. Próximos vencimentos, se houver.\n"
+        "Use no máximo ~15 linhas, com emojis com moderação. Não invente "
+        "números que não estejam nos dados."
     )
-    return "".join(b.text for b in resposta.content if b.type == "text").strip()
+    return await _backend().gerar_texto(system, dados)

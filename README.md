@@ -4,7 +4,8 @@ Bot pessoal de Telegram que organiza suas finanças:
 
 - 📸 **Recebe fotos de notas fiscais e comprovantes** — você envia a foto com uma
   legenda dizendo como pagou ("paguei no Nubank crédito") e ele extrai valor,
-  data, estabelecimento e categoria usando a API do Claude (visão computacional).
+  data, estabelecimento e categoria com IA de visão computacional — **Google
+  Gemini (gratuito)** ou Anthropic Claude, você escolhe.
 - 📊 **Mantém sua planilha financeira** — o comando `/planilha` gera um Excel
   atualizado com todos os lançamentos, os dias de pagamento de cada cartão e
   conta, resumo mensal, resumo semanal e gastos por categoria.
@@ -28,7 +29,7 @@ Bot pessoal de Telegram que organiza suas finanças:
 ## Como funciona
 
 ```
-Foto da nota + legenda ──▶ Claude (visão) extrai valor/data/loja/categoria
+Foto da nota + legenda ──▶ IA (Gemini grátis ou Claude) extrai valor/data/loja/categoria
                                      │
                                      ▼
                     SQLite (data/financeiro.db) ──▶ /planilha gera o Excel
@@ -49,10 +50,17 @@ Requisitos: Python 3.10+.
 2. Envie `/newbot`, escolha um nome e um username;
 3. Copie o **token** que ele devolve.
 
-### 2. Pegue sua chave da Anthropic
+### 2. Escolha a IA que lê as notas (tem opção gratuita)
 
-Crie uma chave de API em [platform.claude.com](https://platform.claude.com/)
-(menu API Keys). A leitura de cada nota fiscal custa centavos de dólar.
+O bot funciona com **um** destes dois provedores — configure a chave de um deles:
+
+| Provedor | Custo | Como obter a chave |
+|---|---|---|
+| **Google Gemini** (recomendado para custo zero) | **Gratuito** — a camada free dá centenas de leituras/dia, de sobra para uso pessoal | [aistudio.google.com](https://aistudio.google.com/) → *Get API key* |
+| Anthropic Claude | Pago (centavos por nota), leitura um pouco melhor | [platform.claude.com](https://platform.claude.com/) → *API Keys* |
+
+Preencha `GEMINI_API_KEY` **ou** `ANTHROPIC_API_KEY` no `.env`. Se preencher as
+duas, o Claude é usado por padrão (mude com `IA_PROVIDER=gemini`).
 
 ### 3. Configure e rode
 
@@ -83,6 +91,51 @@ docker build -t finbot .
 docker run -d --name finbot --restart unless-stopped \
   --env-file .env -v "$(pwd)/data:/app/data" finbot
 ```
+
+## 💸 Rodando 100% de graça
+
+Custo zero de verdade é possível:
+
+1. **Telegram**: o bot é gratuito, sem limite relevante para uso pessoal.
+2. **IA**: use o **Gemini** (`GEMINI_API_KEY`) — a camada gratuita do Google
+   cobre com folga o uso pessoal (dezenas de notas por dia). Sem cartão de
+   crédito.
+3. **Hospedagem** — o bot precisa de um processo Python sempre ligado.
+   Opções gratuitas que funcionam bem:
+
+   | Opção | Observações |
+   |---|---|
+   | **Oracle Cloud Always Free** | VM gratuita para sempre (ARM até 4 vCPU/24 GB). Pede cartão no cadastro, mas não cobra. A melhor opção "servidor de verdade". |
+   | **Google Cloud e2-micro** | 1 VM e2-micro *always free* (regiões dos EUA). Também pede cartão sem cobrar. |
+   | **PC/notebook antigo ou Raspberry Pi em casa** | `docker run --restart unless-stopped ...` e esquece. Zero burocracia. |
+   | **Celular Android velho com Termux** | `pkg install python` + `pip install -r requirements.txt` + `python bot.py`. Deixe na tomada. |
+
+   Evite os planos gratuitos de Render/Railway/Fly: eles "dormem" o processo
+   após minutos sem tráfego, o que quebra os resumos agendados e o polling.
+
+   Em uma VM Linux, para manter o bot rodando após desconectar:
+
+   ```bash
+   # com Docker (recomendado)
+   docker run -d --name finbot --restart unless-stopped \
+     --env-file .env -v "$(pwd)/data:/app/data" finbot
+
+   # ou com systemd
+   sudo tee /etc/systemd/system/finbot.service > /dev/null <<'EOF'
+   [Unit]
+   Description=Assistente financeiro Telegram
+   After=network-online.target
+
+   [Service]
+   WorkingDirectory=/home/SEU_USUARIO/assistenteHome
+   ExecStart=/home/SEU_USUARIO/assistenteHome/.venv/bin/python bot.py
+   Restart=always
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo systemctl enable --now finbot
+   ```
 
 ## Comandos
 
@@ -127,7 +180,9 @@ finbot/
   config.py          # variáveis de ambiente (.env)
   db.py              # SQLite: cartões/contas, gastos, ajustes
   stats.py           # totais, médias, séries e vencimentos
-  ia.py              # chamadas ao Claude: visão, interpretação e respostas
+  ia.py              # prompts e escolha do provedor de IA
+  ia_claude.py       # backend Anthropic (Claude)
+  ia_gemini.py       # backend Google Gemini (gratuito)
   resumos.py         # resumos semanais/mensais (com fallback sem IA)
   planilha.py        # geração do Excel
 tests/               # testes de banco, estatísticas e planilha

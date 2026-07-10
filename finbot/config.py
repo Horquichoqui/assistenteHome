@@ -26,7 +26,8 @@ def _carregar_dotenv(caminho: Path) -> None:
 @dataclass
 class Config:
     telegram_token: str
-    anthropic_api_key: str
+    anthropic_api_key: str = ""
+    gemini_api_key: str = ""
     timezone: str = "America/Sao_Paulo"
     db_path: Path = field(default_factory=lambda: RAIZ / "data" / "financeiro.db")
     allowed_user_ids: frozenset[int] = frozenset()
@@ -42,11 +43,13 @@ def carregar_config() -> Config:
             "configure o token no arquivo .env (veja .env.example)."
         )
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
-    if not api_key:
+    anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    if not anthropic_key and not gemini_key:
         raise SystemExit(
-            "ANTHROPIC_API_KEY não definida. Gere uma chave em "
-            "https://platform.claude.com/ e configure no arquivo .env."
+            "Nenhuma chave de IA definida. Configure no .env UMA das opções:\n"
+            "- GEMINI_API_KEY (GRATUITA — gere em https://aistudio.google.com/); ou\n"
+            "- ANTHROPIC_API_KEY (paga, melhor leitura — https://platform.claude.com/)."
         )
 
     ids_brutos = os.environ.get("ALLOWED_USER_IDS", "")
@@ -59,7 +62,8 @@ def carregar_config() -> Config:
 
     return Config(
         telegram_token=token,
-        anthropic_api_key=api_key,
+        anthropic_api_key=anthropic_key,
+        gemini_api_key=gemini_key,
         timezone=os.environ.get("TIMEZONE", "America/Sao_Paulo"),
         db_path=db_path,
         allowed_user_ids=allowed,
