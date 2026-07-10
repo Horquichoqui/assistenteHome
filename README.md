@@ -113,7 +113,19 @@ Custo zero de verdade é possível:
    Evite os planos gratuitos de Render/Railway/Fly: eles "dormem" o processo
    após minutos sem tráfego, o que quebra os resumos agendados e o polling.
 
-   Em uma VM Linux, para manter o bot rodando após desconectar:
+   **Instalação em 1 comando na VM** (Ubuntu/Debian — ex.: Oracle Always Free):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/Horquichoqui/assistenteHome/main/deploy/instalar.sh | bash
+   # edite o .env quando ele pedir, e rode o script de novo
+   ```
+
+   O script instala o Python, clona o projeto, cria o `.env` para você
+   preencher e configura um serviço systemd que mantém o bot no ar e o
+   reinicia sozinho se a VM reiniciar. Como o bot só faz conexões de SAÍDA
+   (polling do Telegram), não é preciso abrir nenhuma porta no firewall.
+
+   Alternativas manuais em uma VM Linux:
 
    ```bash
    # com Docker (recomendado)
