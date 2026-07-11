@@ -74,3 +74,69 @@ def test_vencimento_em_dia_inexistente_no_mes(db):
     cartao = db.adicionar_cartao("Fatura", "conta", dia_vencimento=31)
     # Fevereiro não tem dia 31 → vence no último dia do mês
     assert stats.proximo_vencimento(cartao, date(2026, 2, 10)) == date(2026, 2, 28)
+
+
+def test_total_por_pessoa(db):
+    db.adicionar_gasto(1000, date(2026, 7, 1), responsavel="gabriel")
+    db.adicionar_gasto(2000, date(2026, 7, 2), responsavel="gabriel")
+    db.adicionar_gasto(500, date(2026, 7, 3), responsavel="maria_eduarda")
+    db.adicionar_gasto(300, date(2026, 7, 4))  # sem responsável
+
+    gastos = db.listar_gastos()
+    assert stats.total_por_pessoa(gastos) == [
+        ("gabriel", 3000),
+        ("maria_eduarda", 500),
+        (None, 300),
+    ]
+
+
+def test_total_renda_e_investimentos(db):
+    db.definir_renda("gabriel", 550000)
+    db.definir_renda("maria_eduarda", 420000)
+    assert stats.total_renda_centavos(db.listar_rendas()) == 970000
+
+    db.definir_investimento("Tesouro", 500000)
+    db.definir_investimento("CDB", 100000)
+    assert stats.total_investimentos_centavos(db.listar_investimentos()) == 600000
+
+
+def test_percentual():
+    assert stats.percentual(50, 200) == 25.0
+    assert stats.percentual(50, 0) == 0.0
+
+
+def test_classificar_fixos_variaveis(db):
+    conta = db.adicionar_cartao("Luz", tipo="conta", dia_vencimento=15)
+    cartao = db.adicionar_cartao("Nubank", tipo="cartao", dia_vencimento=10)
+
+    db.adicionar_gasto(1000, date(2026, 7, 1), cartao_id=conta.id, estabelecimento="Conta de luz")
+    db.adicionar_gasto(2000, date(2026, 7, 2), cartao_id=cartao.id, estabelecimento="Mercado")
+    db.adicionar_gasto(3000, date(2026, 7, 3), estabelecimento="Presente")  # sem cartão
+    db.adicionar_gasto_parcelado(
+        9000, 3, date(2026, 7, 1), estabelecimento="Notebook", cartao_id=cartao.id
+    )
+
+    gastos = db.listar_gastos()
+    cartoes = db.listar_cartoes()
+    fixos, variaveis = stats.classificar_fixos_variaveis(gastos, cartoes)
+
+    assert {g.estabelecimento for g in fixos} == {"Conta de luz", "Notebook"}
+    assert {g.estabelecimento for g in variaveis} == {"Mercado", "Presente"}
+
+
+def test_radar_categorias(db):
+    db.adicionar_gasto(6000, date(2026, 7, 1), categoria="mercado")
+    db.adicionar_gasto(1000, date(2026, 7, 2), categoria="lazer")
+    db.definir_teto("mercado", 5000)
+
+    gastos = db.listar_gastos()
+    radar = {r.categoria: r for r in stats.radar_categorias(gastos, db.listar_tetos())}
+
+    assert radar["mercado"].gasto_centavos == 6000
+    assert radar["mercado"].teto_centavos == 5000
+    assert radar["mercado"].percentual_do_teto == 120.0
+    assert radar["mercado"].sinal == "🔴"
+
+    assert radar["lazer"].teto_centavos is None
+    assert radar["lazer"].percentual_do_teto is None
+    assert radar["lazer"].sinal == "-"

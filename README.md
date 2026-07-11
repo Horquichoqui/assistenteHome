@@ -160,6 +160,11 @@ Custo zero de verdade é possível:
 | `/conta Luz 15` | Cadastra a conta Luz com vencimento dia 15 |
 | `/contas` | Lista cartões/contas, próximos vencimentos e gasto do mês |
 | `/remover Nubank` | Remove um cartão/conta |
+| `/renda 1 5500 Salário` | Define a renda mensal da pessoa 1 (modo casal) |
+| `/investimento Tesouro 5000` | Registra/atualiza um investimento |
+| `/teto mercado 800` | Define o teto de gasto mensal de uma categoria |
+| `/pendentes` | Lista gastos ainda não marcados como pagos |
+| `/pago 42` | Marca o gasto #42 como pago |
 | `/planilha` | Gera e envia a planilha Excel atualizada |
 | `/resumo` | Resumo do mês atual, na hora |
 | `/semana` | Resumo da semana atual, na hora |
@@ -167,22 +172,45 @@ Custo zero de verdade é possível:
 
 Fora dos comandos, tudo é linguagem natural: fotos registram gastos, frases
 como "gastei 30 de uber no Nubank" registram gastos, e perguntas são
-respondidas com base nos seus dados.
+respondidas com base nos seus dados. Diga na mensagem se o gasto foi de uma
+pessoa específica ou combinado ("foi a Maria Eduarda", "foi combinado") e
+mencione parcelamento ("em 10x") — o bot lança as parcelas automaticamente
+nos meses seguintes.
+
+## Modo casal (opcional)
+
+Preenchendo `PESSOA_1_ID`/`PESSOA_1_NOME`/`PESSOA_2_ID`/`PESSOA_2_NOME` no
+`.env`, o bot passa a atribuir cada gasto a quem enviou a mensagem (ou a quem
+a legenda/IA indicar), separa "combinado" para gastos conjuntos, e habilita
+`/renda 1`/`/renda 2` para acompanhar o quanto cada um ganha e gasta. Sem essa
+configuração, o bot funciona normalmente sem essa separação por pessoa.
 
 ## A planilha
 
-`/planilha` gera um `.xlsx` com cinco abas:
+`/planilha` gera um `.xlsx` com dez abas:
 
-1. **Lançamentos** — todos os gastos: data, valor, estabelecimento, categoria,
-   cartão/conta, descrição;
-2. **Cartões e Contas** — dias de vencimento e fechamento, próximo vencimento
-   e gasto do mês em cada um;
-3. **Resumo Mensal** — total por mês (12 meses) e média mensal;
-4. **Resumo Semanal** — total por semana (12 semanas) e média semanal;
-5. **Categorias do Mês** — para onde o dinheiro foi neste mês.
+1. **Resumo do Mês** — renda, despesas, investimentos e saldo do mês, % da
+   renda gasto, gasto por pessoa, gráfico e um espaço para metas/anotações;
+2. **Gastos Fixos** — parcelamentos e gastos vinculados a contas cadastradas
+   (aluguel, condomínio, assinaturas), com responsável, parcela e status de
+   pagamento;
+3. **Gastos do Dia a Dia** — compras avulsas, no mesmo formato;
+4. **Faturas de Cartão** — total do mês por cartão de crédito, calculado
+   automaticamente, com status de pagamento;
+5. **Categorias e Orçamento** — teto definido por categoria, gasto do mês e
+   um radar (🟢🟡🔴) de quão perto do limite você está, com gráfico;
+6. **Investimentos** — valores registrados com `/investimento`;
+7. **Cartões e Contas** — dias de vencimento/fechamento e último valor pago
+   (útil para contas de valor variável, como luz e água);
+8. **Resumo Mensal** — total por mês (12 meses) e média mensal;
+9. **Resumo Semanal** — total por semana (12 semanas) e média semanal;
+10. **Lançamentos** — histórico completo de todos os gastos.
 
 A fonte de verdade é o banco SQLite em `data/financeiro.db` — a planilha é
 gerada dele a qualquer momento, sempre atualizada. Faça backup da pasta `data/`.
+As colunas "Pago?" na planilha são texto (Sim/Não) — o Excel gerado não tem
+caixas de marcar clicáveis; use `/pendentes` e `/pago <número>` para atualizar
+o status pelo bot.
 
 ## Estrutura do código
 

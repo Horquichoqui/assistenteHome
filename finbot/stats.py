@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Optional
 
-from .db import Cartao, Database, Gasto
+from .db import Cartao, Database, Gasto, Renda
 
 
 def formatar_reais(centavos: int) -> str:
@@ -46,6 +46,80 @@ def total_por_categoria(gastos: list[Gasto]) -> list[tuple[str, int]]:
     for g in gastos:
         somas[g.categoria or "outros"] += g.valor_centavos
     return sorted(somas.items(), key=lambda kv: -kv[1])
+
+
+def total_por_pessoa(gastos: list[Gasto]) -> list[tuple[Optional[str], int]]:
+    """Totais por responsável (chave interna da pessoa, ou None se não atribuído)."""
+    somas: dict[Optional[str], int] = defaultdict(int)
+    for g in gastos:
+        somas[g.responsavel] += g.valor_centavos
+    return sorted(somas.items(), key=lambda kv: -kv[1])
+
+
+def total_renda_centavos(rendas: list[Renda]) -> int:
+    return sum(r.valor_centavos for r in rendas)
+
+
+def total_investimentos_centavos(investimentos: list[tuple[str, int]]) -> int:
+    return sum(valor for _, valor in investimentos)
+
+
+def percentual(parte_centavos: int, total_centavos_: int) -> float:
+    """Percentual de 'parte' sobre 'total'; 0 se o total for zero."""
+    return (parte_centavos / total_centavos_ * 100) if total_centavos_ else 0.0
+
+
+def classificar_fixos_variaveis(
+    gastos: list[Gasto], cartoes: list[Cartao]
+) -> tuple[list[Gasto], list[Gasto]]:
+    """Separa gastos 'fixos' (parcelados, ou vinculados a uma conta cadastrada
+    como recorrente) dos 'do dia a dia' (compras avulsas)."""
+    contas_ids = {c.id for c in cartoes if c.tipo == "conta"}
+    fixos, variaveis = [], []
+    for g in gastos:
+        if g.parcela_total or (g.cartao_id is not None and g.cartao_id in contas_ids):
+            fixos.append(g)
+        else:
+            variaveis.append(g)
+    return fixos, variaveis
+
+
+@dataclass(frozen=True)
+class RadarCategoria:
+    categoria: str
+    gasto_centavos: int
+    teto_centavos: Optional[int]
+
+    @property
+    def percentual_do_teto(self) -> Optional[float]:
+        if not self.teto_centavos:
+            return None
+        return self.gasto_centavos / self.teto_centavos * 100
+
+    @property
+    def sinal(self) -> str:
+        p = self.percentual_do_teto
+        if p is None:
+            return "-"
+        if p >= 100:
+            return "🔴"
+        if p >= 80:
+            return "🟡"
+        return "🟢"
+
+
+def radar_categorias(gastos: list[Gasto], tetos: dict[str, int]) -> list[RadarCategoria]:
+    """Gasto de cada categoria comparado ao teto definido (se houver)."""
+    gasto_por_categoria = dict(total_por_categoria(gastos))
+    categorias = sorted(set(gasto_por_categoria) | set(tetos))
+    return [
+        RadarCategoria(
+            categoria=cat,
+            gasto_centavos=gasto_por_categoria.get(cat, 0),
+            teto_centavos=tetos.get(cat),
+        )
+        for cat in categorias
+    ]
 
 
 def serie_semanal(db: Database, hoje: date, semanas: int = 8) -> list[tuple[date, int]]:
