@@ -17,7 +17,7 @@ _URL = "https://generativelanguage.googleapis.com/v1beta/models/{modelo}:generat
 
 
 def _modelo() -> str:
-    return os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
+    return os.environ.get("GEMINI_MODEL") or "gemini-flash-latest"
 
 
 def limpar_json(texto: str) -> str:
