@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 RAIZ = Path(__file__).resolve().parent.parent
+
+PESSOA_COMBINADO = "combinado"
+
+
+def slug_pessoa(nome: str) -> str:
+    """Normaliza um nome para uma chave interna estável (ex.: 'Maria Eduarda' -> 'maria_eduarda')."""
+    sem_acento = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode("ascii")
+    return "_".join(sem_acento.strip().lower().split())
 
 
 def _carregar_dotenv(caminho: Path) -> None:
@@ -31,6 +41,31 @@ class Config:
     timezone: str = "America/Sao_Paulo"
     db_path: Path = field(default_factory=lambda: RAIZ / "data" / "financeiro.db")
     allowed_user_ids: frozenset[int] = frozenset()
+    # Mapeamento para o modo "casal": id do Telegram -> chave interna da pessoa.
+    pessoas_por_id: dict[int, str] = field(default_factory=dict)
+    # Chave interna -> nome de exibição (ex.: "maria_eduarda" -> "Maria Eduarda").
+    nomes_pessoas: dict[str, str] = field(default_factory=dict)
+    # Ordem de cadastro, para comandos como "/renda 1 ..." / "/renda 2 ...".
+    ordem_pessoas: list[str] = field(default_factory=list)
+
+    def pessoa_do_chat(self, user_id: Optional[int]) -> Optional[str]:
+        """Chave interna da pessoa dona desse ID do Telegram, se configurada."""
+        if user_id is None:
+            return None
+        return self.pessoas_por_id.get(user_id)
+
+    def pessoa_por_numero(self, numero: int) -> Optional[str]:
+        """Resolve '1'/'2' (usado em comandos) para a chave interna da pessoa."""
+        if 1 <= numero <= len(self.ordem_pessoas):
+            return self.ordem_pessoas[numero - 1]
+        return None
+
+    def nome_pessoa(self, chave: Optional[str]) -> str:
+        if not chave:
+            return "não informado"
+        if chave == PESSOA_COMBINADO:
+            return "Combinado"
+        return self.nomes_pessoas.get(chave, chave)
 
 
 def carregar_config() -> Config:
@@ -60,6 +95,19 @@ def carregar_config() -> Config:
     db_env = os.environ.get("DB_PATH", "").strip()
     db_path = Path(db_env) if db_env else RAIZ / "data" / "financeiro.db"
 
+    pessoas_por_id: dict[int, str] = {}
+    nomes_pessoas: dict[str, str] = {}
+    ordem_pessoas: list[str] = []
+    for n in (1, 2):
+        id_bruto = os.environ.get(f"PESSOA_{n}_ID", "").strip()
+        nome_bruto = os.environ.get(f"PESSOA_{n}_NOME", "").strip()
+        if not id_bruto or not nome_bruto:
+            continue
+        chave = slug_pessoa(nome_bruto)
+        pessoas_por_id[int(id_bruto)] = chave
+        nomes_pessoas[chave] = nome_bruto
+        ordem_pessoas.append(chave)
+
     return Config(
         telegram_token=token,
         anthropic_api_key=anthropic_key,
@@ -67,4 +115,7 @@ def carregar_config() -> Config:
         timezone=os.environ.get("TIMEZONE", "America/Sao_Paulo"),
         db_path=db_path,
         allowed_user_ids=allowed,
+        pessoas_por_id=pessoas_por_id,
+        nomes_pessoas=nomes_pessoas,
+        ordem_pessoas=ordem_pessoas,
     )

@@ -54,6 +54,8 @@ class GastoExtraido(BaseModel):
     categoria: str = "outros"
     forma_pagamento: Optional[str] = None
     observacoes: Optional[str] = None
+    responsavel: Optional[str] = None  # nome de uma pessoa cadastrada, ou "combinado"
+    parcelas: Optional[int] = None  # número de parcelas, se mencionado (ex.: "10x")
 
 
 class Interpretacao(BaseModel):
@@ -71,7 +73,21 @@ def _contexto_cartoes(cartoes: list[Cartao]) -> str:
     return "\n".join(linhas)
 
 
-def _instrucoes_extracao(cartoes: list[Cartao], hoje: date) -> str:
+def _instrucoes_extracao(
+    cartoes: list[Cartao], hoje: date, pessoas: list[str]
+) -> str:
+    if pessoas:
+        bloco_pessoas = (
+            f"Pessoas cadastradas: {', '.join(pessoas)}.\n"
+            "- responsavel: se a mensagem indicar que o gasto foi de uma "
+            "dessas pessoas específicas (ex.: 'a Maria Eduarda gastou...'), "
+            "preencha com o nome exato dela. Se indicar que foi conjunto "
+            "('nosso', 'dividimos', 'juntos', 'da casa'), preencha com "
+            "'combinado'. Se não houver indicação, deixe nulo (será "
+            "assumido como de quem enviou a mensagem).\n"
+        )
+    else:
+        bloco_pessoas = ""
     return (
         "Você extrai dados de gastos para um controle financeiro pessoal "
         "brasileiro. Valores em reais (BRL). Hoje é "
@@ -79,13 +95,17 @@ def _instrucoes_extracao(cartoes: list[Cartao], hoje: date) -> str:
         f"Categorias válidas: {', '.join(CATEGORIAS)}.\n"
         "Cartões e contas cadastrados pelo usuário:\n"
         f"{_contexto_cartoes(cartoes)}\n"
+        f"{bloco_pessoas}"
         "Regras:\n"
-        "- valor_total: o valor TOTAL pago, em reais (ex.: 45.9).\n"
+        "- valor_total: o valor TOTAL pago, em reais (ex.: 45.9). Se a "
+        "compra foi parcelada, é o valor total da compra, não o da parcela.\n"
         "- data_compra: data da compra no formato YYYY-MM-DD; se não houver, "
         "deixe nulo.\n"
         "- forma_pagamento: se a legenda ou a nota indicarem o cartão/conta, "
         "use exatamente o nome cadastrado correspondente; caso contrário, "
         "copie o que foi informado (ex.: 'pix', 'dinheiro').\n"
+        "- parcelas: número de parcelas, se mencionado (ex.: '10x', 'em 3 "
+        "vezes'); caso contrário, deixe nulo.\n"
         "- A legenda do usuário tem prioridade sobre o que está impresso na nota."
     )
 
@@ -96,6 +116,7 @@ async def extrair_de_foto(
     legenda: Optional[str],
     cartoes: list[Cartao],
     hoje: date,
+    pessoas: list[str] = (),
 ) -> GastoExtraido:
     """Lê uma foto de nota fiscal/comprovante e extrai os dados do gasto."""
     texto = "Extraia os dados desta nota fiscal ou comprovante.\n" + (
@@ -104,7 +125,7 @@ async def extrair_de_foto(
         else "O usuário não enviou legenda."
     )
     return await _backend().estruturado(
-        system=_instrucoes_extracao(cartoes, hoje),
+        system=_instrucoes_extracao(cartoes, hoje, list(pessoas)),
         texto=texto,
         modelo=GastoExtraido,
         imagem=imagem,
@@ -116,10 +137,11 @@ async def interpretar_texto(
     texto: str,
     cartoes: list[Cartao],
     hoje: date,
+    pessoas: list[str] = (),
 ) -> Interpretacao:
     """Decide se uma mensagem de texto registra um gasto ou faz uma pergunta."""
     system = (
-        _instrucoes_extracao(cartoes, hoje)
+        _instrucoes_extracao(cartoes, hoje, list(pessoas))
         + "\nClassifique a mensagem do usuário:\n"
         "- 'registrar_gasto': ele relata um gasto que fez (ex.: 'gastei 50 "
         "no mercado no nubank', 'paguei 120 de luz'). Preencha o campo "

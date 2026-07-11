@@ -24,7 +24,7 @@ from telegram.ext import (
 )
 
 from finbot import ia, planilha, resumos, stats
-from finbot.config import Config, carregar_config
+from finbot.config import PESSOA_COMBINADO, Config, carregar_config
 from finbot.db import Database
 from finbot.stats import formatar_reais
 
@@ -48,6 +48,14 @@ como pagou. Ex.: "paguei no Nubank crédito".
 /contas → lista tudo com os próximos vencimentos
 /remover Nubank → remove um cartão/conta
 
+💰 Renda e orçamento:
+/renda 1 5500 Salário → define a renda da pessoa 1
+/renda 2 4200 Salário → define a renda da pessoa 2
+/investimento Tesouro 5000 → registra um investimento
+/teto mercado 800 → define teto de gasto mensal da categoria
+/pendentes → lista gastos ainda não marcados como pagos
+/pago 42 → marca o gasto #42 como pago
+
 📊 Relatórios:
 /planilha → envia a planilha Excel atualizada
 /resumo → resumo do mês atual
@@ -56,6 +64,11 @@ como pagou. Ex.: "paguei no Nubank crédito".
 
 ❓ Perguntas livres: "quanto gastei no Nubank este mês?",
 "qual conta vence agora?", "resume meus gastos" — é só mandar.
+
+👤 Se o gasto foi de uma pessoa específica ou combinado (dividido),
+diga isso na legenda/mensagem — ex.: "gastei 50, foi combinado".
+Compras parceladas ("em 10x") já são lançadas automaticamente nos
+próximos meses.
 
 ⏰ Automático: resumo toda semana (domingo à noite), resumo mensal
 (dia 1º) e lembretes de vencimento."""
@@ -224,7 +237,7 @@ async def cmd_planilha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _lembrar_chat(db, update)
     hoje = _hoje(cfg)
     destino = Path(tempfile.mkdtemp()) / f"financeiro-{hoje.isoformat()}.xlsx"
-    planilha.gerar_planilha(db, destino, hoje)
+    planilha.gerar_planilha(db, destino, hoje, cfg)
     with destino.open("rb") as arquivo:
         await update.message.reply_document(
             document=arquivo,
@@ -265,6 +278,123 @@ async def cmd_desfazer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
 
 
+async def cmd_renda(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cfg = _cfg(context)
+    if not _autorizado(cfg, update):
+        return await _rejeitar(update)
+    if not cfg.ordem_pessoas:
+        await update.message.reply_text(
+            "O modo casal não está configurado (PESSOA_1_NOME/PESSOA_2_NOME "
+            "vazios no .env)."
+        )
+        return
+    args = list(context.args or [])
+    guia = "\n".join(
+        f"{i + 1} → {cfg.nome_pessoa(p)}" for i, p in enumerate(cfg.ordem_pessoas)
+    )
+    if len(args) < 2 or not args[0].isdigit():
+        await update.message.reply_text(f"Formato: /renda <número> <valor> [descrição]\n{guia}")
+        return
+    pessoa = cfg.pessoa_por_numero(int(args[0]))
+    if pessoa is None:
+        await update.message.reply_text(f"Número inválido.\n{guia}")
+        return
+    try:
+        valor = float(args[1].replace(",", "."))
+    except ValueError:
+        await update.message.reply_text("Valor inválido. Ex.: /renda 1 5500 Salário")
+        return
+    descricao = " ".join(args[2:]).strip() or None
+    centavos = round(valor * 100)
+    _db(context).definir_renda(pessoa, centavos, descricao)
+    await update.message.reply_text(
+        f"✅ Renda de {cfg.nome_pessoa(pessoa)} definida: {formatar_reais(centavos)}"
+        + (f" ({descricao})" if descricao else "")
+    )
+
+
+async def cmd_investimento(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _autorizado(_cfg(context), update):
+        return await _rejeitar(update)
+    args = list(context.args or [])
+    if len(args) < 2:
+        await update.message.reply_text(
+            "Formato: /investimento <local> <valor>\nEx.: /investimento \"Tesouro Selic\" 5000"
+        )
+        return
+    *partes_local, valor_bruto = args
+    local = " ".join(partes_local).strip()
+    try:
+        valor = float(valor_bruto.replace(",", "."))
+    except ValueError:
+        local, valor_bruto = None, None
+    if not local or valor_bruto is None:
+        await update.message.reply_text(
+            "Formato: /investimento <local> <valor>\nEx.: /investimento \"Tesouro Selic\" 5000"
+        )
+        return
+    centavos = round(valor * 100)
+    _db(context).definir_investimento(local, centavos)
+    await update.message.reply_text(f"✅ Investimento \"{local}\" atualizado: {formatar_reais(centavos)}")
+
+
+async def cmd_teto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _autorizado(_cfg(context), update):
+        return await _rejeitar(update)
+    args = list(context.args or [])
+    if len(args) < 2:
+        await update.message.reply_text("Formato: /teto <categoria> <valor>\nEx.: /teto mercado 800")
+        return
+    *partes_categoria, valor_bruto = args
+    categoria = " ".join(partes_categoria).strip().lower()
+    try:
+        valor = float(valor_bruto.replace(",", "."))
+    except ValueError:
+        categoria, valor_bruto = None, None
+    if not categoria or valor_bruto is None:
+        await update.message.reply_text("Formato: /teto <categoria> <valor>\nEx.: /teto mercado 800")
+        return
+    centavos = round(valor * 100)
+    _db(context).definir_teto(categoria, centavos)
+    await update.message.reply_text(
+        f"✅ Teto de \"{categoria}\" definido: {formatar_reais(centavos)}/mês"
+    )
+
+
+async def cmd_pendentes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cfg = _cfg(context)
+    if not _autorizado(cfg, update):
+        return await _rejeitar(update)
+    pendentes = _db(context).listar_pendentes()
+    if not pendentes:
+        await update.message.reply_text("✅ Nenhum gasto pendente de pagamento.")
+        return
+    linhas = ["🕒 Gastos pendentes de pagamento:"]
+    for g in pendentes:
+        onde = g.estabelecimento or g.descricao or g.categoria
+        linhas.append(
+            f"#{g.id} · {formatar_reais(g.valor_centavos)} · {onde} "
+            f"({g.data_compra.strftime('%d/%m')})"
+        )
+    linhas.append("\nUse /pago <número> para marcar como pago.")
+    await update.message.reply_text("\n".join(linhas))
+
+
+async def cmd_pago(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _autorizado(_cfg(context), update):
+        return await _rejeitar(update)
+    args = list(context.args or [])
+    numero = args[0].lstrip("#") if args else ""
+    if not numero.isdigit():
+        await update.message.reply_text("Formato: /pago <número> (veja os números em /pendentes)")
+        return
+    gasto_id = int(numero)
+    if _db(context).marcar_pago(gasto_id):
+        await update.message.reply_text(f"✅ Gasto #{gasto_id} marcado como pago.")
+    else:
+        await update.message.reply_text(f"Não encontrei o gasto #{gasto_id}.")
+
+
 # --------------------------------------------------------------------------
 # Registro de gastos (foto e texto)
 # --------------------------------------------------------------------------
@@ -280,12 +410,32 @@ def _data_da_compra(extraido: ia.GastoExtraido, hoje: date) -> date:
     return hoje
 
 
+_SINONIMOS_COMBINADO = ("combinado", "conjunto", "juntos", "dividido", "nosso", "casa")
+
+
+def _resolver_responsavel(
+    cfg: Config, extraido_texto: Optional[str], remetente_id: Optional[int]
+) -> Optional[str]:
+    """Usa o que a IA extraiu (nome ou 'combinado'); se vazio, assume quem enviou a mensagem."""
+    if extraido_texto:
+        texto = extraido_texto.strip().casefold()
+        if texto in _SINONIMOS_COMBINADO:
+            return PESSOA_COMBINADO
+        for chave, nome in cfg.nomes_pessoas.items():
+            nome_cf = nome.casefold()
+            if nome_cf == texto or nome_cf in texto or texto in nome_cf:
+                return chave
+    return cfg.pessoa_do_chat(remetente_id)
+
+
 async def _salvar_gasto(
+    cfg: Config,
     db: Database,
     extraido: ia.GastoExtraido,
     hoje: date,
     legenda: Optional[str],
     origem: str,
+    remetente_id: Optional[int],
 ) -> str:
     if not extraido.valor_total or extraido.valor_total <= 0:
         return (
@@ -295,16 +445,35 @@ async def _salvar_gasto(
     centavos = round(extraido.valor_total * 100)
     data_compra = _data_da_compra(extraido, hoje)
     cartao = db.buscar_cartao(extraido.forma_pagamento) or db.buscar_cartao(legenda)
-    db.adicionar_gasto(
-        valor_centavos=centavos,
-        data_compra=data_compra,
-        estabelecimento=extraido.estabelecimento,
-        categoria=extraido.categoria or "outros",
-        forma_pagamento=extraido.forma_pagamento,
-        cartao_id=cartao.id if cartao else None,
-        descricao=legenda or extraido.observacoes,
-        origem=origem,
-    )
+    responsavel = _resolver_responsavel(cfg, extraido.responsavel, remetente_id)
+    parcelas = extraido.parcelas if extraido.parcelas and extraido.parcelas > 1 else None
+
+    if parcelas:
+        db.adicionar_gasto_parcelado(
+            valor_total_centavos=centavos,
+            parcelas=parcelas,
+            data_primeira_parcela=data_compra,
+            estabelecimento=extraido.estabelecimento,
+            categoria=extraido.categoria or "outros",
+            forma_pagamento=extraido.forma_pagamento,
+            cartao_id=cartao.id if cartao else None,
+            descricao=legenda or extraido.observacoes,
+            origem=origem,
+            responsavel=responsavel,
+        )
+    else:
+        db.adicionar_gasto(
+            valor_centavos=centavos,
+            data_compra=data_compra,
+            estabelecimento=extraido.estabelecimento,
+            categoria=extraido.categoria or "outros",
+            forma_pagamento=extraido.forma_pagamento,
+            cartao_id=cartao.id if cartao else None,
+            descricao=legenda or extraido.observacoes,
+            origem=origem,
+            responsavel=responsavel,
+        )
+
     linhas = [
         "✅ Gasto registrado!",
         f"💰 {formatar_reais(centavos)}"
@@ -320,6 +489,13 @@ async def _salvar_gasto(
         )
     else:
         linhas.append("💳 Forma de pagamento não informada.")
+    if responsavel:
+        linhas.append(f"👤 {cfg.nome_pessoa(responsavel)}")
+    if parcelas:
+        linhas.append(
+            f"📆 Parcelado em {parcelas}x de {formatar_reais(round(centavos / parcelas))} "
+            "(lançado automaticamente nos próximos meses)"
+        )
     return "\n".join(linhas)
 
 
@@ -345,7 +521,12 @@ async def receber_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     hoje = _hoje(cfg)
     try:
         extraido = await ia.extrair_de_foto(
-            imagem, media_type, msg.caption, db.listar_cartoes(), hoje
+            imagem,
+            media_type,
+            msg.caption,
+            db.listar_cartoes(),
+            hoje,
+            pessoas=list(cfg.nomes_pessoas.values()),
         )
     except Exception:
         log.exception("Falha ao extrair dados da foto")
@@ -354,7 +535,10 @@ async def receber_foto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "ou registre por texto: \"gastei 45,90 no mercado no Nubank\"."
         )
         return
-    resposta = await _salvar_gasto(db, extraido, hoje, msg.caption, origem="foto")
+    remetente_id = update.effective_user.id if update.effective_user else None
+    resposta = await _salvar_gasto(
+        cfg, db, extraido, hoje, msg.caption, origem="foto", remetente_id=remetente_id
+    )
     await msg.reply_text(resposta)
 
 
@@ -372,9 +556,14 @@ async def receber_texto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await msg.chat.send_action("typing")
     hoje = _hoje(cfg)
     try:
-        interpretacao = await ia.interpretar_texto(texto, db.listar_cartoes(), hoje)
+        interpretacao = await ia.interpretar_texto(
+            texto, db.listar_cartoes(), hoje, pessoas=list(cfg.nomes_pessoas.values())
+        )
         if interpretacao.intencao == "registrar_gasto" and interpretacao.gasto:
-            resposta = await _salvar_gasto(db, interpretacao.gasto, hoje, texto, origem="texto")
+            remetente_id = update.effective_user.id if update.effective_user else None
+            resposta = await _salvar_gasto(
+                cfg, db, interpretacao.gasto, hoje, texto, origem="texto", remetente_id=remetente_id
+            )
         elif interpretacao.intencao == "pergunta":
             contexto = resumos.contexto_financeiro(db, hoje)
             resposta = await ia.responder_pergunta(texto, contexto)
@@ -470,6 +659,11 @@ def main() -> None:
     app.add_handler(CommandHandler(["resumo", "mes"], cmd_resumo))
     app.add_handler(CommandHandler("semana", cmd_semana))
     app.add_handler(CommandHandler("desfazer", cmd_desfazer))
+    app.add_handler(CommandHandler("renda", cmd_renda))
+    app.add_handler(CommandHandler("investimento", cmd_investimento))
+    app.add_handler(CommandHandler("teto", cmd_teto))
+    app.add_handler(CommandHandler("pendentes", cmd_pendentes))
+    app.add_handler(CommandHandler("pago", cmd_pago))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, receber_foto))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_texto))
 
