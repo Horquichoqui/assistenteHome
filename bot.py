@@ -86,10 +86,22 @@ def _cfg(context: ContextTypes.DEFAULT_TYPE) -> Config:
     return context.application.bot_data["config"]
 
 
+def _chats_registrados(db: Database) -> set[int]:
+    valor = db.obter_ajuste("chats_donos")
+    if not valor:
+        return set()
+    return {int(c) for c in valor.split(",") if c.strip()}
+
+
 def _lembrar_chat(db: Database, update: Update) -> None:
-    """Guarda o chat do dono para os envios automáticos."""
-    if update.effective_chat:
-        db.definir_ajuste("chat_id_dono", str(update.effective_chat.id))
+    """Adiciona o chat à lista de destinatários dos envios automáticos."""
+    if not update.effective_chat:
+        return
+    chat_id = update.effective_chat.id
+    atuais = _chats_registrados(db)
+    if chat_id not in atuais:
+        atuais.add(chat_id)
+        db.definir_ajuste("chats_donos", ",".join(str(c) for c in sorted(atuais)))
 
 
 # --------------------------------------------------------------------------
@@ -382,17 +394,27 @@ async def receber_texto(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 # Tarefas agendadas
 # --------------------------------------------------------------------------
 
-async def _chat_do_dono(context: ContextTypes.DEFAULT_TYPE) -> Optional[int]:
-    valor = _db(context).obter_ajuste("chat_id_dono")
-    return int(valor) if valor else None
+async def _chats_dos_donos(context: ContextTypes.DEFAULT_TYPE) -> list[int]:
+    return sorted(_chats_registrados(_db(context)))
+
+
+async def _enviar_para_todos(
+    context: ContextTypes.DEFAULT_TYPE, chats: list[int], texto: str
+) -> None:
+    """Envia a mesma mensagem para cada chat, sem deixar uma falha bloquear os demais."""
+    for chat_id in chats:
+        try:
+            await context.bot.send_message(chat_id=chat_id, text=texto)
+        except Exception:
+            log.exception("Falha ao enviar mensagem automática para o chat %s", chat_id)
 
 
 async def job_manha(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Todo dia às 9h: lembretes de vencimento; dia 1º: resumo do mês anterior."""
     cfg = _cfg(context)
     db = _db(context)
-    chat_id = await _chat_do_dono(context)
-    if chat_id is None:
+    chats = await _chats_dos_donos(context)
+    if not chats:
         return
     hoje = _hoje(cfg)
 
@@ -408,28 +430,24 @@ async def job_manha(context: ContextTypes.DEFAULT_TYPE) -> None:
                 v.dias_restantes, f"vence em {v.dias_restantes} dias"
             )
             linhas.append(f"• {v.cartao.nome} {quando} ({v.data.strftime('%d/%m')})")
-        await context.bot.send_message(chat_id=chat_id, text="\n".join(linhas))
+        await _enviar_para_todos(context, chats, "\n".join(linhas))
 
     if hoje.day == 1:
         texto = await resumos.resumo_mensal(db, hoje, mes_anterior=True)
-        await context.bot.send_message(
-            chat_id=chat_id, text="📅 Fechamento do mês!\n\n" + texto
-        )
+        await _enviar_para_todos(context, chats, "📅 Fechamento do mês!\n\n" + texto)
 
 
 async def job_noite(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Domingo às 20h: resumo da semana."""
     cfg = _cfg(context)
-    chat_id = await _chat_do_dono(context)
-    if chat_id is None:
+    chats = await _chats_dos_donos(context)
+    if not chats:
         return
     hoje = _hoje(cfg)
     if hoje.weekday() != 6:  # 6 = domingo
         return
     texto = await resumos.resumo_semanal(_db(context), hoje)
-    await context.bot.send_message(
-        chat_id=chat_id, text="🗓️ Resumo da semana!\n\n" + texto
-    )
+    await _enviar_para_todos(context, chats, "🗓️ Resumo da semana!\n\n" + texto)
 
 
 # --------------------------------------------------------------------------
