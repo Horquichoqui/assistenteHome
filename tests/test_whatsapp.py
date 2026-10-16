@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from finbot.whatsapp import coletar_grupo, parsear_cabecalho
+from finbot.whatsapp import coletar_grupo, mesmo_nome_de_grupo, parsear_cabecalho
 
 # Imita a estrutura do WhatsApp Web usada pelo leitor: painel de conversas com a
 # busca e o nome do grupo, e a conversa aberta com as mensagens e uma imagem.
@@ -49,6 +49,17 @@ def test_parsear_cabecalho_com_segundos_e_ano_curto():
         datetime(2026, 3, 1, 23, 5, 10),
         "Gabriel",
     )
+
+
+def test_mesmo_nome_de_grupo_ignora_caixa_acento_e_emoji():
+    # título real do WhatsApp (com emojis) x nome digitado no .env
+    assert mesmo_nome_de_grupo("NOSSAS NOTAS 🗒️👫", "Nossas Notas")
+    assert mesmo_nome_de_grupo("Família Job", "familia job")
+    assert mesmo_nome_de_grupo("Casa  Gabriel e Maria", "Casa Gabriel e Maria")
+    assert not mesmo_nome_de_grupo("Nossas Notas Antigas", "Nossas Notas")
+    assert not mesmo_nome_de_grupo("Outro chat", "Nossas Notas")
+    assert not mesmo_nome_de_grupo(None, "Nossas Notas")
+    assert not mesmo_nome_de_grupo("Nossas Notas", "   ")
 
 
 def test_parsear_cabecalho_invalido():

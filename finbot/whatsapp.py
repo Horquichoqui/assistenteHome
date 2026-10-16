@@ -19,6 +19,7 @@ import hashlib
 import logging
 import re
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -86,6 +87,20 @@ class ColetaWhatsApp:
     status: str  # "ok" | "precisa_login" | "grupo_nao_encontrado" | "erro"
     mensagens: list[MensagemWhatsApp] = field(default_factory=list)
     erro: Optional[str] = None
+
+
+def mesmo_nome_de_grupo(titulo: Optional[str], configurado: str) -> bool:
+    """Compara nomes ignorando caixa, acentos e emojis.
+
+    O WhatsApp mostra "NOSSAS NOTAS 🗒️👫" e o .env pode ter "Nossas Notas".
+    """
+    def normalizar(nome: str) -> str:
+        sem_acento = unicodedata.normalize("NFKD", nome).encode("ascii", "ignore").decode("ascii")
+        return " ".join(re.sub(r"[^a-z0-9\s]", "", sem_acento.casefold()).split())
+
+    if not titulo or not configurado.strip():
+        return False
+    return normalizar(titulo) == normalizar(configurado)
 
 
 def parsear_cabecalho(pre: str) -> Optional[tuple[datetime, str]]:
@@ -209,7 +224,7 @@ async def _abrir_grupo(pagina, nome_grupo: str) -> bool:
         titulos = pagina.locator("#pane-side span[title]")
         for i in range(await titulos.count()):
             item = titulos.nth(i)
-            if await item.get_attribute("title") == nome_grupo:
+            if mesmo_nome_de_grupo(await item.get_attribute("title"), nome_grupo):
                 await item.click()
                 await pagina.locator("#main").wait_for(timeout=20_000)
                 await asyncio.sleep(2)
