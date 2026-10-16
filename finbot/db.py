@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import sqlite3
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -55,12 +56,30 @@ CREATE TABLE IF NOT EXISTS investimentos (
     atualizado_em TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS contas_a_pagar (
+    id INTEGER PRIMARY KEY,
+    chave TEXT NOT NULL UNIQUE,               -- descrição normalizada + mês (YYYY-MM)
+    descricao TEXT NOT NULL,
+    valor_centavos INTEGER,                   -- NULL enquanto o valor não foi informado
+    vencimento TEXT NOT NULL,                 -- ISO date (YYYY-MM-DD)
+    pago INTEGER NOT NULL DEFAULT 0,          -- 0/1
+    pago_em TEXT,                             -- ISO datetime
+    origem TEXT NOT NULL DEFAULT 'whatsapp',
+    atualizado_em TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mensagens_processadas (
+    chave TEXT PRIMARY KEY,                   -- hash de uma mensagem do grupo já analisada
+    processada_em TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS ajustes (
     chave TEXT PRIMARY KEY,
     valor TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_gastos_data ON gastos(data_compra);
+CREATE INDEX IF NOT EXISTS idx_contas_vencimento ON contas_a_pagar(vencimento);
 """
 
 # Migrações idempotentes para bancos criados antes destas colunas existirem.
@@ -122,6 +141,21 @@ class Renda:
     @property
     def valor(self) -> float:
         return self.valor_centavos / 100
+
+
+@dataclass(frozen=True)
+class ContaAPagar:
+    id: int
+    descricao: str
+    valor_centavos: Optional[int]
+    vencimento: date
+    pago: bool
+    pago_em: Optional[str]
+    origem: str
+
+    @property
+    def valor(self) -> Optional[float]:
+        return None if self.valor_centavos is None else self.valor_centavos / 100
 
 
 class Database:
@@ -417,6 +451,109 @@ class Database:
             ).fetchall()
         return [(r["local"], r["valor_centavos"]) for r in rows]
 
+    # ----- contas a pagar (lidas do grupo do WhatsApp) -----
+
+    def registrar_conta_a_pagar(
+        self,
+        descricao: str,
+        vencimento: date,
+        valor_centavos: Optional[int] = None,
+        pago: bool = False,
+        origem: str = "whatsapp",
+    ) -> str:
+        """Cria a conta ou atualiza a existente (mesma descrição no mesmo mês).
+
+        Um valor informado substitui o anterior, e 'pago' nunca volta a ser
+        pendente automaticamente. Retorna 'criada' ou 'atualizada'.
+        """
+        descricao = " ".join(descricao.split())
+        agora = datetime.now().isoformat(timespec="seconds")
+        chave = _chave_conta(descricao, vencimento)
+        with self._conectar() as conn:
+            existente = conn.execute(
+                "SELECT id, valor_centavos, pago FROM contas_a_pagar WHERE chave = ?",
+                (chave,),
+            ).fetchone()
+            if existente is None:
+                conn.execute(
+                    """INSERT INTO contas_a_pagar
+                       (chave, descricao, valor_centavos, vencimento, pago, pago_em,
+                        origem, atualizado_em)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        chave,
+                        descricao,
+                        valor_centavos,
+                        vencimento.isoformat(),
+                        1 if pago else 0,
+                        agora if pago else None,
+                        origem,
+                        agora,
+                    ),
+                )
+                return "criada"
+            novo_valor = valor_centavos if valor_centavos is not None else existente["valor_centavos"]
+            ja_paga = bool(existente["pago"]) or pago
+            pago_agora = agora if pago and not existente["pago"] else None
+            conn.execute(
+                """UPDATE contas_a_pagar SET valor_centavos = ?, vencimento = ?, pago = ?,
+                     pago_em = COALESCE(?, pago_em), atualizado_em = ?
+                   WHERE id = ?""",
+                (
+                    novo_valor,
+                    vencimento.isoformat(),
+                    1 if ja_paga else 0,
+                    pago_agora,
+                    agora,
+                    existente["id"],
+                ),
+            )
+            return "atualizada"
+
+    def listar_contas_a_pagar(self, inicio: date, fim: date) -> list[ContaAPagar]:
+        """Contas com vencimento entre inicio e fim, da mais próxima para a mais distante."""
+        with self._conectar() as conn:
+            rows = conn.execute(
+                """SELECT * FROM contas_a_pagar WHERE vencimento BETWEEN ? AND ?
+                   ORDER BY vencimento, id""",
+                (inicio.isoformat(), fim.isoformat()),
+            ).fetchall()
+        return [_conta(r) for r in rows]
+
+    def contas_pendentes_ate(self, limite: date) -> list[ContaAPagar]:
+        """Contas ainda não pagas com vencimento até 'limite' (inclui as atrasadas)."""
+        with self._conectar() as conn:
+            rows = conn.execute(
+                """SELECT * FROM contas_a_pagar WHERE pago = 0 AND vencimento <= ?
+                   ORDER BY vencimento, id""",
+                (limite.isoformat(),),
+            ).fetchall()
+        return [_conta(r) for r in rows]
+
+    def marcar_conta_paga(self, conta_id: int, pago: bool = True) -> bool:
+        agora = datetime.now().isoformat(timespec="seconds") if pago else None
+        with self._conectar() as conn:
+            cur = conn.execute(
+                "UPDATE contas_a_pagar SET pago = ?, pago_em = ? WHERE id = ?",
+                (1 if pago else 0, agora, conta_id),
+            )
+            return cur.rowcount > 0
+
+    def mensagem_processada(self, chave: str) -> bool:
+        with self._conectar() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM mensagens_processadas WHERE chave = ?", (chave,)
+            ).fetchone()
+        return row is not None
+
+    def marcar_mensagens_processadas(self, chaves: list[str]) -> None:
+        agora = datetime.now().isoformat(timespec="seconds")
+        with self._conectar() as conn:
+            conn.executemany(
+                "INSERT OR IGNORE INTO mensagens_processadas (chave, processada_em) VALUES (?, ?)",
+                [(c, agora) for c in chaves],
+            )
+
     # ----- ajustes -----
 
     def definir_ajuste(self, chave: str, valor: str) -> None:
@@ -450,6 +587,25 @@ def _ultimo_dia_do_mes(ano: int, mes: int) -> int:
     else:
         proximo = date(ano, mes + 1, 1)
     return (proximo - timedelta(days=1)).day
+
+
+def _chave_conta(descricao: str, vencimento: date) -> str:
+    """'Luz' em 15/10 e 'luz ' em 20/10 são a mesma conta do mês: chave = nome normalizado + mês."""
+    sem_acento = unicodedata.normalize("NFKD", descricao).encode("ascii", "ignore").decode("ascii")
+    normal = " ".join(sem_acento.casefold().split())
+    return f"{normal}|{vencimento:%Y-%m}"
+
+
+def _conta(row: sqlite3.Row) -> ContaAPagar:
+    return ContaAPagar(
+        id=row["id"],
+        descricao=row["descricao"],
+        valor_centavos=row["valor_centavos"],
+        vencimento=date.fromisoformat(row["vencimento"]),
+        pago=bool(row["pago"]),
+        pago_em=row["pago_em"],
+        origem=row["origem"],
+    )
 
 
 def _cartao(row: sqlite3.Row) -> Cartao:

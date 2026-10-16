@@ -6,6 +6,7 @@ envia resumos semanais/mensais e responde perguntas sobre as finanças.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import tempfile
 from datetime import date, datetime
@@ -14,7 +15,7 @@ from pathlib import Path
 from typing import Optional
 
 import pytz
-from telegram import Update
+from telegram import InputFile, Update
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -23,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from finbot import ia, planilha, resumos, stats
+from finbot import contas_whatsapp, ia, planilha, resumos, stats
 from finbot.config import PESSOA_COMBINADO, Config, carregar_config
 from finbot.db import Database
 from finbot.stats import formatar_reais
@@ -56,6 +57,11 @@ como pagou. Ex.: "paguei no Nubank crédito".
 /pendentes → lista gastos ainda não marcados como pagos
 /pago 42 → marca o gasto #42 como pago
 
+🧾 Contas do grupo do WhatsApp (leitura automática, 1x por dia):
+/whatsapp → lê o grupo agora e atualiza as contas
+/apagar → lista as contas do mês, com números
+/pagarconta 3 → marca a conta #3 como paga
+
 📊 Relatórios:
 /planilha → envia a planilha Excel atualizada
 /resumo → resumo do mês atual
@@ -71,7 +77,7 @@ Compras parceladas ("em 10x") já são lançadas automaticamente nos
 próximos meses.
 
 ⏰ Automático: resumo toda semana (domingo à noite), resumo mensal
-(dia 1º) e lembretes de vencimento."""
+(dia 1º), lembretes de vencimento e alertas das contas do grupo."""
 
 
 def _hoje(cfg: Config) -> date:
@@ -395,6 +401,54 @@ async def cmd_pago(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Não encontrei o gasto #{gasto_id}.")
 
 
+async def cmd_apagar(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cfg = _cfg(context)
+    if not _autorizado(cfg, update):
+        return await _rejeitar(update)
+    hoje = _hoje(cfg)
+    inicio, fim = stats.limites_do_mes(hoje)
+    contas = _db(context).listar_contas_a_pagar(inicio, fim)
+    if not contas:
+        await update.message.reply_text(
+            "Nenhuma conta do mês. As contas chegam do grupo do WhatsApp "
+            "todo dia (ou rode /whatsapp agora)."
+        )
+        return
+    linhas = ["🧾 Contas do mês:"] + contas_whatsapp.formatar_contas(contas)
+    linhas.append("\nUse /pagarconta <número> para marcar como paga.")
+    await update.message.reply_text("\n".join(linhas))
+
+
+async def cmd_pagarconta(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not _autorizado(_cfg(context), update):
+        return await _rejeitar(update)
+    args = list(context.args or [])
+    numero = args[0].lstrip("#") if args else ""
+    if not numero.isdigit():
+        await update.message.reply_text("Formato: /pagarconta <número> (veja os números em /apagar)")
+        return
+    conta_id = int(numero)
+    if _db(context).marcar_conta_paga(conta_id):
+        await update.message.reply_text(f"✅ Conta #{conta_id} marcada como paga.")
+    else:
+        await update.message.reply_text(f"Não encontrei a conta #{conta_id}.")
+
+
+async def cmd_whatsapp(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    cfg = _cfg(context)
+    if not _autorizado(cfg, update):
+        return await _rejeitar(update)
+    _lembrar_chat(_db(context), update)
+    if not cfg.whatsapp_grupo:
+        await update.message.reply_text(
+            "A leitura do WhatsApp não está configurada. Defina WHATSAPP_GRUPO no .env "
+            "(nome exato do grupo) e reinicie o bot."
+        )
+        return
+    await update.message.reply_text("⏳ Lendo o grupo do WhatsApp. Isso pode levar alguns minutos...")
+    await _rodar_whatsapp(context)
+
+
 # --------------------------------------------------------------------------
 # Registro de gastos (foto e texto)
 # --------------------------------------------------------------------------
@@ -598,6 +652,55 @@ async def _enviar_para_todos(
             log.exception("Falha ao enviar mensagem automática para o chat %s", chat_id)
 
 
+async def _enviar_foto_para_todos(
+    context: ContextTypes.DEFAULT_TYPE, chats: list[int], png: bytes, legenda: str
+) -> None:
+    for chat_id in chats:
+        try:
+            await context.bot.send_photo(
+                chat_id=chat_id,
+                photo=InputFile(png, filename="print.png"),
+                caption=legenda[:1024],
+            )
+        except Exception:
+            log.exception("Falha ao enviar foto para o chat %s", chat_id)
+
+
+async def _rodar_whatsapp(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Lê o grupo do WhatsApp, atualiza as contas e envia o relatório e os prints a todos."""
+    cfg = _cfg(context)
+    db = _db(context)
+    chats = await _chats_dos_donos(context)
+    if not chats:
+        return
+    lock: asyncio.Lock = context.application.bot_data["whatsapp_lock"]
+    if lock.locked():
+        await _enviar_para_todos(context, chats, "⏳ Já existe uma leitura do WhatsApp em andamento.")
+        return
+
+    async with lock:
+        async def enviar_qr(png: bytes) -> None:
+            await _enviar_foto_para_todos(
+                context,
+                chats,
+                png,
+                "📱 Escaneie este QR code no WhatsApp (Aparelhos conectados › "
+                "Conectar um aparelho). Se expirar, envio outro.",
+            )
+
+        agora = datetime.now(pytz.timezone(cfg.timezone)).replace(tzinfo=None)
+        resultado = await contas_whatsapp.sincronizar(cfg, db, agora, _hoje(cfg), enviar_qr)
+        await _enviar_para_todos(context, chats, resultado.texto)
+        for png, legenda in resultado.prints:
+            await _enviar_foto_para_todos(context, chats, png, legenda)
+
+
+async def job_whatsapp(context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Todo dia (no horário WHATSAPP_HORA): lê o grupo e atualiza as contas."""
+    if _cfg(context).whatsapp_grupo:
+        await _rodar_whatsapp(context)
+
+
 async def job_manha(context: ContextTypes.DEFAULT_TYPE) -> None:
     """Todo dia às 9h: lembretes de vencimento; dia 1º: resumo do mês anterior."""
     cfg = _cfg(context)
@@ -620,6 +723,10 @@ async def job_manha(context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             linhas.append(f"• {v.cartao.nome} {quando} ({v.data.strftime('%d/%m')})")
         await _enviar_para_todos(context, chats, "\n".join(linhas))
+
+    alertas = contas_whatsapp.alertas_contas(db, hoje)
+    if alertas:
+        await _enviar_para_todos(context, chats, "💸 Contas a pagar:\n" + "\n".join(alertas))
 
     if hoje.day == 1:
         texto = await resumos.resumo_mensal(db, hoje, mes_anterior=True)
@@ -648,6 +755,7 @@ def main() -> None:
     app = Application.builder().token(cfg.telegram_token).build()
     app.bot_data["config"] = cfg
     app.bot_data["db"] = db
+    app.bot_data["whatsapp_lock"] = asyncio.Lock()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler(["ajuda", "help"], cmd_ajuda))
@@ -664,12 +772,19 @@ def main() -> None:
     app.add_handler(CommandHandler("teto", cmd_teto))
     app.add_handler(CommandHandler("pendentes", cmd_pendentes))
     app.add_handler(CommandHandler("pago", cmd_pago))
+    app.add_handler(CommandHandler("whatsapp", cmd_whatsapp))
+    app.add_handler(CommandHandler("apagar", cmd_apagar))
+    app.add_handler(CommandHandler("pagarconta", cmd_pagarconta))
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, receber_foto))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, receber_texto))
 
     tz = pytz.timezone(cfg.timezone)
     app.job_queue.run_daily(job_manha, time=dtime(hour=9, minute=0, tzinfo=tz))
     app.job_queue.run_daily(job_noite, time=dtime(hour=20, minute=0, tzinfo=tz))
+    if cfg.whatsapp_grupo:
+        app.job_queue.run_daily(
+            job_whatsapp, time=dtime(hour=cfg.whatsapp_hora, minute=0, tzinfo=tz)
+        )
 
     log.info("Bot iniciado. Aguardando mensagens...")
     app.run_polling(allowed_updates=Update.ALL_TYPES)

@@ -13,7 +13,7 @@ from datetime import date
 from types import ModuleType
 from typing import Literal, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import ia_claude, ia_gemini
 from .db import Cartao
@@ -61,6 +61,17 @@ class GastoExtraido(BaseModel):
 class Interpretacao(BaseModel):
     intencao: Literal["registrar_gasto", "pergunta", "outro"]
     gasto: Optional[GastoExtraido] = None
+
+
+class ContaExtraida(BaseModel):
+    descricao: str  # nome curto da conta, ex.: "Luz", "Internet"
+    valor: Optional[float] = None  # em reais; nulo se a conta não informa valor
+    vencimento: Optional[str] = None  # YYYY-MM-DD
+    pago: bool = False  # true se a mensagem disser que a conta já foi paga
+
+
+class ListaContas(BaseModel):
+    contas: list[ContaExtraida] = Field(default_factory=list)
 
 
 def _contexto_cartoes(cartoes: list[Cartao]) -> str:
@@ -153,6 +164,57 @@ async def interpretar_texto(
     return await _backend().estruturado(
         system=system, texto=texto, modelo=Interpretacao
     )
+
+
+def _instrucoes_contas(hoje: date) -> str:
+    return (
+        "Você analisa mensagens de um grupo de WhatsApp de um casal e identifica "
+        "CONTAS A PAGAR da casa (luz, água, gás, internet, aluguel, condomínio, "
+        "boletos, faturas, assinaturas etc.). Valores em reais. Hoje é "
+        f"{hoje.isoformat()}.\n"
+        "Regras:\n"
+        "- Ignore o que não for conta ou pagamento (bom dia, piadas, fotos pessoais).\n"
+        "- descricao: nome curto e claro da conta, ex.: 'Luz', 'Água', 'Internet'.\n"
+        "- valor: número em reais (ex.: 183.4). Se a mensagem não informar valor "
+        "(conta de valor variável), deixe nulo. Nunca invente valores.\n"
+        "- vencimento: data de vencimento em YYYY-MM-DD. Se a mensagem só disser o "
+        "dia (ex.: 'vence dia 15'), use esse dia no mês atual. Se não houver, nulo.\n"
+        "- pago: true somente se a mensagem disser que a conta JÁ FOI PAGA ou for "
+        "comprovante de pagamento; caso contrário, false. Se já estiver paga e não "
+        "houver vencimento, use a data da mensagem.\n"
+        "- Em imagens de boleto ou fatura, leia valor e vencimento impressos."
+    )
+
+
+async def extrair_contas_de_texto(linhas: list[str], hoje: date) -> list[ContaExtraida]:
+    """Identifica contas em um lote de mensagens de texto ('data hora, remetente: texto')."""
+    texto = "Mensagens do grupo (data hora, remetente: texto):\n" + "\n".join(linhas)
+    resultado = await _backend().estruturado(
+        system=_instrucoes_contas(hoje), texto=texto, modelo=ListaContas
+    )
+    return resultado.contas
+
+
+async def extrair_contas_de_imagem(
+    imagem: bytes,
+    media_type: str,
+    legenda: str,
+    momento: str,
+    hoje: date,
+) -> list[ContaExtraida]:
+    """Identifica contas em uma imagem enviada no grupo (boleto, fatura, comprovante)."""
+    texto = (
+        f"Imagem enviada no grupo em {momento}. "
+        f"Texto que acompanhou a imagem: {legenda or '(nenhum)'}"
+    )
+    resultado = await _backend().estruturado(
+        system=_instrucoes_contas(hoje),
+        texto=texto,
+        modelo=ListaContas,
+        imagem=imagem,
+        media_type=media_type,
+    )
+    return resultado.contas
 
 
 async def responder_pergunta(pergunta: str, contexto_financeiro: str) -> str:
