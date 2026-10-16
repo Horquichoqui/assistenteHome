@@ -195,3 +195,47 @@ def test_ultimo_valor_pago(db):
     db.adicionar_gasto(15000, date(2026, 6, 15), cartao_id=conta.id)
     db.adicionar_gasto(16000, date(2026, 7, 15), cartao_id=conta.id)
     assert db.ultimo_valor_pago(conta.id) == 16000
+
+
+def test_contas_a_pagar_criar_e_atualizar(db):
+    assert db.registrar_conta_a_pagar("Luz", date(2026, 10, 15)) == "criada"
+    # mesma conta no mesmo mês (nome com outra capitalização e espaços): atualiza
+    assert db.registrar_conta_a_pagar("  luz ", date(2026, 10, 20), 18000) == "atualizada"
+    # uma nova leitura sem valor não apaga o valor já informado
+    db.registrar_conta_a_pagar("Luz", date(2026, 10, 20))
+
+    contas = db.listar_contas_a_pagar(date(2026, 10, 1), date(2026, 10, 31))
+    assert len(contas) == 1
+    assert contas[0].valor_centavos == 18000
+    assert contas[0].vencimento == date(2026, 10, 20)
+    # outro mês é outra conta
+    assert db.registrar_conta_a_pagar("Luz", date(2026, 11, 15)) == "criada"
+
+
+def test_conta_paga_nao_volta_a_pendente_sozinha(db):
+    db.registrar_conta_a_pagar("Internet", date(2026, 10, 5), 9990)
+    db.registrar_conta_a_pagar("Internet", date(2026, 10, 5), pago=True)
+    conta = db.listar_contas_a_pagar(date(2026, 10, 1), date(2026, 10, 31))[0]
+    assert conta.pago is True
+    assert conta.pago_em is not None
+
+    db.registrar_conta_a_pagar("Internet", date(2026, 10, 5), pago=False)
+    assert db.listar_contas_a_pagar(date(2026, 10, 1), date(2026, 10, 31))[0].pago is True
+
+
+def test_contas_pendentes_ate_e_marcar_paga(db):
+    db.registrar_conta_a_pagar("Atrasada", date(2026, 10, 1), 1000)
+    db.registrar_conta_a_pagar("Futura", date(2026, 11, 1), 2000)
+
+    pendentes = db.contas_pendentes_ate(date(2026, 10, 16))
+    assert [c.descricao for c in pendentes] == ["Atrasada"]
+    assert db.marcar_conta_paga(pendentes[0].id) is True
+    assert db.contas_pendentes_ate(date(2026, 10, 16)) == []
+    assert db.marcar_conta_paga(9999) is False
+
+
+def test_mensagens_processadas(db):
+    assert not db.mensagem_processada("abc")
+    db.marcar_mensagens_processadas(["abc", "abc", "def"])  # repetida não dá erro
+    assert db.mensagem_processada("abc")
+    assert db.mensagem_processada("def")

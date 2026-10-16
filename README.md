@@ -165,6 +165,9 @@ Custo zero de verdade é possível:
 | `/teto mercado 800` | Define o teto de gasto mensal de uma categoria |
 | `/pendentes` | Lista gastos ainda não marcados como pagos |
 | `/pago 42` | Marca o gasto #42 como pago |
+| `/whatsapp` | Lê agora o grupo do WhatsApp e atualiza as contas a pagar |
+| `/apagar` | Lista as contas do mês, com números |
+| `/pagarconta 3` | Marca a conta #3 como paga |
 | `/planilha` | Gera e envia a planilha Excel atualizada |
 | `/resumo` | Resumo do mês atual, na hora |
 | `/semana` | Resumo da semana atual, na hora |
@@ -187,7 +190,7 @@ configuração, o bot funciona normalmente sem essa separação por pessoa.
 
 ## A planilha
 
-`/planilha` gera um `.xlsx` com dez abas:
+`/planilha` gera um `.xlsx` com onze abas:
 
 1. **Resumo do Mês** — renda, despesas, investimentos e saldo do mês, % da
    renda gasto, gasto por pessoa, gráfico e um espaço para metas/anotações;
@@ -197,14 +200,79 @@ configuração, o bot funciona normalmente sem essa separação por pessoa.
 3. **Gastos do Dia a Dia** — compras avulsas, no mesmo formato;
 4. **Faturas de Cartão** — total do mês por cartão de crédito, calculado
    automaticamente, com status de pagamento;
-5. **Categorias e Orçamento** — teto definido por categoria, gasto do mês e
+5. **Contas a Pagar** — contas do mês lidas do grupo do WhatsApp, com
+   vencimento, valor, se já foram pagas e quanto ainda falta pagar;
+6. **Categorias e Orçamento** — teto definido por categoria, gasto do mês e
    um radar (🟢🟡🔴) de quão perto do limite você está, com gráfico;
-6. **Investimentos** — valores registrados com `/investimento`;
-7. **Cartões e Contas** — dias de vencimento/fechamento e último valor pago
+7. **Investimentos** — valores registrados com `/investimento`;
+8. **Cartões e Contas** — dias de vencimento/fechamento e último valor pago
    (útil para contas de valor variável, como luz e água);
-8. **Resumo Mensal** — total por mês (12 meses) e média mensal;
-9. **Resumo Semanal** — total por semana (12 semanas) e média semanal;
-10. **Lançamentos** — histórico completo de todos os gastos.
+9. **Resumo Mensal** — total por mês (12 meses) e média mensal;
+10. **Resumo Semanal** — total por semana (12 semanas) e média semanal;
+11. **Lançamentos** — histórico completo de todos os gastos.
+
+As contas do grupo do WhatsApp não entram no "Despesas totais" do Resumo do
+Mês, porque nem sempre são gastos que você fez pelo bot (aluguel e luz, por
+exemplo, costumam sair direto do banco). Elas aparecem na própria aba.
+
+## Contas do grupo do WhatsApp (leitura automática)
+
+Todo dia, no horário `WHATSAPP_HORA` (padrão: 8h), o bot abre o WhatsApp Web em
+um navegador sem janela, lê as mensagens do grupo das últimas 48 horas e
+identifica as contas. Ele analisa o texto e as imagens (boleto, fatura,
+comprovante), registra ou atualiza cada conta em **Contas a Pagar** e manda no
+Telegram um relatório, com o print de cada imagem que tinha conta. Às 9h, o
+lembrete também avisa as contas que vencem em até 3 dias e as atrasadas (até
+30 dias).
+
+Como as contas são atualizadas:
+
+- Uma conta é identificada pelo **nome + mês** (ex.: "Luz" em outubro). Outra
+  mensagem com o mesmo nome no mesmo mês atualiza a conta, sem duplicar.
+- Um valor informado substitui o anterior. Contas de valor variável ficam como
+  "valor a confirmar" até alguém mandar o valor.
+- Uma mensagem dizendo que a conta foi paga, ou um comprovante, marca como
+  paga. Ela não volta a ficar pendente sozinha.
+- Cada mensagem é analisada uma única vez.
+
+**Configuração**
+
+1. No `.env`, coloque o nome **exato** do grupo (como aparece no WhatsApp):
+
+   ```bash
+   WHATSAPP_GRUPO=Casa Gabriel e Maria
+   WHATSAPP_HORA=8
+   ```
+
+2. Na VM, instale o navegador (uma vez só):
+
+   ```bash
+   cd ~/assistenteHome
+   .venv/bin/pip install -r requirements.txt
+   .venv/bin/python -m playwright install --with-deps chromium
+   sudo systemctl restart finbot
+   ```
+
+3. Faça a primeira conexão: mande `/whatsapp` no Telegram. O bot envia um QR
+   code. No celular, abra WhatsApp › Aparelhos conectados › Conectar um
+   aparelho e escaneie. A sessão fica salva em `data/whatsapp-perfil/`, então
+   você só precisa escanear de novo se o WhatsApp desconectar o aparelho. Se o
+   QR expirar, o bot envia outro.
+
+**Atenção**
+
+- A automação do WhatsApp Web não é permitida pelos Termos de Uso do WhatsApp.
+  Uma leitura por dia tem risco baixo, mas a conta pode ser restringida. Use
+  sabendo disso.
+- A pasta `data/whatsapp-perfil/` guarda a sessão do seu WhatsApp, então trate
+  como senha. Ela já fica fora do Git, porque `data/` está no `.gitignore`.
+- O texto e as imagens do grupo são enviados ao Google Gemini para análise, o
+  mesmo que já acontece com as notas fiscais.
+- Os seletores acompanham o layout atual do WhatsApp Web. Se ele mudar, a
+  leitura passa a dizer que não encontrou mensagens, e o ajuste é feito em
+  `finbot/whatsapp.py`.
+- O Chromium usa algumas centenas de MB durante a leitura. Na VM gratuita
+  (1 GB de RAM), vale criar um swap de 2 GB.
 
 A fonte de verdade é o banco SQLite em `data/financeiro.db` — a planilha é
 gerada dele a qualquer momento, sempre atualizada. Faça backup da pasta `data/`.
@@ -225,7 +293,9 @@ finbot/
   ia_gemini.py       # backend Google Gemini (gratuito)
   resumos.py         # resumos semanais/mensais (com fallback sem IA)
   planilha.py        # geração do Excel
-tests/               # testes de banco, estatísticas e planilha
+  whatsapp.py        # leitura do grupo pelo WhatsApp Web (Playwright)
+  contas_whatsapp.py # transforma as mensagens do grupo em contas a pagar
+tests/               # testes de banco, estatísticas, planilha, WhatsApp e contas
 ```
 
 ## Testes

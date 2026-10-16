@@ -183,6 +183,30 @@ def gerar_planilha(db: Database, destino: Path, hoje: date, cfg: Config) -> Path
         ws.cell(row=linha, column=3, value="Sim" if pago else "Não")
         linha += 1
 
+    # ================= Contas a Pagar (lidas do grupo do WhatsApp) =================
+    contas_mes = db.listar_contas_a_pagar(ini_mes, fim_mes)
+    ws = wb.create_sheet("Contas a Pagar")
+    _cabecalho(
+        ws,
+        ["Conta", "Vencimento", "Valor", "Pago?", "Pago em", "Origem"],
+        [24, 14, 16, 10, 18, 12],
+    )
+    linha = 2
+    for c in contas_mes:
+        ws.cell(row=linha, column=1, value=c.descricao)
+        ws.cell(row=linha, column=2, value=c.vencimento).number_format = "DD/MM/YYYY"
+        if c.valor is not None:
+            ws.cell(row=linha, column=3, value=c.valor).number_format = _FORMATO_MOEDA
+        ws.cell(row=linha, column=4, value="Sim" if c.pago else "Não")
+        if c.pago_em:
+            ws.cell(row=linha, column=5, value=c.pago_em.replace("T", " ")[:16])
+        ws.cell(row=linha, column=6, value=c.origem)
+        linha += 1
+    pendente = sum(c.valor_centavos or 0 for c in contas_mes if not c.pago)
+    ws.cell(row=linha + 1, column=2, value="A pagar:").font = Font(bold=True)
+    c = ws.cell(row=linha + 1, column=3, value=pendente / 100)
+    c.number_format, c.font = _FORMATO_MOEDA, Font(bold=True)
+
     # ================= Categorias e Orçamento =================
     ws = wb.create_sheet("Categorias e Orçamento")
     _cabecalho(ws, ["Categoria", "Teto do mês", "Gasto do mês", "% do teto", "Radar"], [18, 16, 16, 12, 8])

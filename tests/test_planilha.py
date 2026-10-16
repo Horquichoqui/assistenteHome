@@ -64,6 +64,7 @@ def test_gerar_planilha_completa(tmp_path):
         "Gastos Fixos",
         "Gastos do Dia a Dia",
         "Faturas de Cartão",
+        "Contas a Pagar",
         "Categorias e Orçamento",
         "Investimentos",
         "Cartões e Contas",

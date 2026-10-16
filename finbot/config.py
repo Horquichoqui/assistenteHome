@@ -47,6 +47,10 @@ class Config:
     nomes_pessoas: dict[str, str] = field(default_factory=dict)
     # Ordem de cadastro, para comandos como "/renda 1 ..." / "/renda 2 ...".
     ordem_pessoas: list[str] = field(default_factory=list)
+    # Leitura automática de um grupo do WhatsApp (vazio = desativado).
+    whatsapp_grupo: str = ""
+    whatsapp_hora: int = 8
+    whatsapp_perfil: Path = field(default_factory=lambda: RAIZ / "data" / "whatsapp-perfil")
 
     def pessoa_do_chat(self, user_id: Optional[int]) -> Optional[str]:
         """Chave interna da pessoa dona desse ID do Telegram, se configurada."""
@@ -108,6 +112,9 @@ def carregar_config() -> Config:
         nomes_pessoas[chave] = nome_bruto
         ordem_pessoas.append(chave)
 
+    hora_bruta = os.environ.get("WHATSAPP_HORA", "").strip()
+    whatsapp_hora = int(hora_bruta) if hora_bruta.isdigit() and int(hora_bruta) <= 23 else 8
+
     return Config(
         telegram_token=token,
         anthropic_api_key=anthropic_key,
@@ -118,4 +125,6 @@ def carregar_config() -> Config:
         pessoas_por_id=pessoas_por_id,
         nomes_pessoas=nomes_pessoas,
         ordem_pessoas=ordem_pessoas,
+        whatsapp_grupo=os.environ.get("WHATSAPP_GRUPO", "").strip(),
+        whatsapp_hora=whatsapp_hora,
     )
