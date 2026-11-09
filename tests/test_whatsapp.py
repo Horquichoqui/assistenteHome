@@ -99,3 +99,51 @@ def test_coletar_grupo_le_mensagens_e_tira_print_da_imagem(tmp_path):
     assert maria.print_png is None
     assert gabriel.print_png is not None and gabriel.print_png.startswith(b"\x89PNG")
     assert maria.chave != gabriel.chave
+
+
+def test_enviar_ao_grupo_digita_com_prefixo_e_quebra_de_linha(tmp_path):
+    pytest.importorskip("playwright.async_api")
+    from finbot.whatsapp import PREFIXO_BOT, enviar_ao_grupo
+
+    # Página falsa com caixa de mensagem: guarda o que foi enviado com Enter.
+    html = tmp_path / "whatsapp.html"
+    html.write_text(PAGINA_FALSA.replace(
+        '<div id="main" style="display:none">',
+        '<div id="main" style="display:none"><footer><div contenteditable="true" id="caixa"></div></footer>',
+    ).replace("</script>", """
+      window.enviadas = [];
+      document.addEventListener('keydown', e => {
+        const caixa = document.getElementById('caixa');
+        if (e.key === 'Enter' && e.shiftKey) { e.preventDefault(); document.execCommand('insertText', false, '\\n'); }
+        else if (e.key === 'Enter') { e.preventDefault(); window.enviadas.push(caixa.innerText); caixa.innerText = ''; document.title = JSON.stringify(window.enviadas); }
+      });
+    </script>"""), encoding="utf-8")
+
+    ok = asyncio.run(enviar_ao_grupo("Casa Gabriel e Maria", tmp_path / "perfil", ["Luz vence amanhã\nR$ 180"], url=html.as_uri()))
+    assert ok is True
+
+    # O que exatamente sai na caixa de mensagem: prefixo + linhas separadas.
+    from playwright.async_api import async_playwright
+    from finbot.whatsapp import _digitar_e_enviar
+
+    async def digitar():
+        async with async_playwright() as p:
+            navegador = await p.chromium.launch()
+            pagina = await navegador.new_page()
+            await pagina.goto(html.as_uri())
+            await pagina.click('#pane-side span[title="Casa Gabriel e Maria"]')
+            await _digitar_e_enviar(pagina, f"{PREFIXO_BOT} Luz vence amanhã\nR$ 180")
+            enviadas = await pagina.evaluate("window.enviadas")
+            await navegador.close()
+            return enviadas
+
+    enviadas = asyncio.run(digitar())
+    assert len(enviadas) == 1
+    assert enviadas[0].startswith(PREFIXO_BOT)
+    assert "Luz vence amanhã" in enviadas[0] and "R$ 180" in enviadas[0]
+
+
+def test_enviar_ao_grupo_sem_textos_nao_abre_navegador(tmp_path):
+    from finbot.whatsapp import enviar_ao_grupo
+
+    assert asyncio.run(enviar_ao_grupo("Grupo", tmp_path / "perfil", ["", "  "])) is True

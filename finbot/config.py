@@ -51,6 +51,10 @@ class Config:
     whatsapp_grupo: str = ""
     whatsapp_hora: int = 8
     whatsapp_perfil: Path = field(default_factory=lambda: RAIZ / "data" / "whatsapp-perfil")
+    whatsapp_avisar: bool = True  # também manda os avisos no próprio grupo
+    # Planilha do Google (opcional): id da planilha e chave da conta de serviço.
+    sheets_id: str = ""
+    sheets_credenciais: Path = field(default_factory=lambda: RAIZ / "data" / "google-credenciais.json")
 
     def pessoa_do_chat(self, user_id: Optional[int]) -> Optional[str]:
         """Chave interna da pessoa dona desse ID do Telegram, se configurada."""
@@ -127,4 +131,15 @@ def carregar_config() -> Config:
         ordem_pessoas=ordem_pessoas,
         whatsapp_grupo=os.environ.get("WHATSAPP_GRUPO", "").strip(),
         whatsapp_hora=whatsapp_hora,
+        whatsapp_avisar=os.environ.get("WHATSAPP_AVISAR", "1").strip().lower() not in ("0", "nao", "não", "false"),
+        sheets_id=_id_planilha(os.environ.get("GOOGLE_SHEETS_ID", "")),
+        sheets_credenciais=Path(os.environ.get("GOOGLE_CREDENCIAIS", "").strip() or RAIZ / "data" / "google-credenciais.json"),
     )
+
+
+def _id_planilha(valor: str) -> str:
+    """Aceita o id puro ou o link inteiro da planilha do Google."""
+    valor = valor.strip()
+    if "/d/" in valor:
+        valor = valor.split("/d/", 1)[1].split("/", 1)[0]
+    return valor

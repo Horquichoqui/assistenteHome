@@ -5,3 +5,4 @@ openpyxl>=3.1
 pydantic>=2.7
 pytz>=2024.1
 playwright>=1.47
+gspread>=6.0

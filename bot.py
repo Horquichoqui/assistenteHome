@@ -24,7 +24,7 @@ from telegram.ext import (
     filters,
 )
 
-from finbot import contas_whatsapp, ia, planilha, resumos, stats
+from finbot import contas_whatsapp, ia, planilha, resumos, sheets, stats, whatsapp
 from finbot.config import PESSOA_COMBINADO, Config, carregar_config
 from finbot.db import Database
 from finbot.stats import formatar_reais
@@ -250,6 +250,8 @@ async def cmd_planilha(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             filename=destino.name,
             caption="📊 Sua planilha financeira atualizada.",
         )
+    if cfg.sheets_id:
+        await _atualizar_planilha_google(context, [update.effective_chat.id])
 
 
 async def cmd_resumo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -693,6 +695,29 @@ async def _rodar_whatsapp(context: ContextTypes.DEFAULT_TYPE) -> None:
         await _enviar_para_todos(context, chats, resultado.texto)
         for png, legenda in resultado.prints:
             await _enviar_foto_para_todos(context, chats, png, legenda)
+        if resultado.status == "ok" and cfg.whatsapp_avisar:
+            await whatsapp.enviar_ao_grupo(cfg.whatsapp_grupo, cfg.whatsapp_perfil, [resultado.texto])
+
+    await _atualizar_planilha_google(context, chats)
+
+
+async def _atualizar_planilha_google(context: ContextTypes.DEFAULT_TYPE, chats: list[int]) -> None:
+    """Espelha o banco na planilha do Google, se configurada; avisa só se falhar."""
+    cfg = _cfg(context)
+    if not cfg.sheets_id:
+        return
+    erro = await asyncio.to_thread(sheets.sincronizar, _db(context), cfg)
+    if erro:
+        await _enviar_para_todos(context, chats, f"⚠️ Não consegui atualizar a planilha do Google: {erro}")
+
+
+async def _avisar_no_grupo(context: ContextTypes.DEFAULT_TYPE, texto: str) -> None:
+    """Repete um aviso no grupo do WhatsApp (sessão já conectada; sem QR code)."""
+    cfg = _cfg(context)
+    if not (cfg.whatsapp_grupo and cfg.whatsapp_avisar):
+        return
+    async with context.application.bot_data["whatsapp_lock"]:
+        await whatsapp.enviar_ao_grupo(cfg.whatsapp_grupo, cfg.whatsapp_perfil, [texto])
 
 
 async def job_whatsapp(context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -726,7 +751,10 @@ async def job_manha(context: ContextTypes.DEFAULT_TYPE) -> None:
 
     alertas = contas_whatsapp.alertas_contas(db, hoje)
     if alertas:
-        await _enviar_para_todos(context, chats, "💸 Contas a pagar:\n" + "\n".join(alertas))
+        texto_alertas = "💸 Contas a pagar:\n" + "\n".join(alertas)
+        await _enviar_para_todos(context, chats, texto_alertas)
+        await _avisar_no_grupo(context, texto_alertas)
+    await _atualizar_planilha_google(context, chats)
 
     if hoje.day == 1:
         texto = await resumos.resumo_mensal(db, hoje, mes_anterior=True)

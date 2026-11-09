@@ -214,3 +214,14 @@ def test_planilha_mostra_as_contas_do_mes(db, cfg, tmp_path):
     linhas = [[c.value for c in linha] for linha in ws.iter_rows(min_row=2, max_row=3)]
     assert linhas[0][0] == "Luz" and linhas[0][3] == "Não"
     assert linhas[1][0] == "Internet" and linhas[1][3] == "Sim"
+
+
+def test_mensagens_do_proprio_bot_sao_ignoradas(monkeypatch, cfg, db):
+    _coleta_falsa(monkeypatch, ColetaWhatsApp("ok", [_msg("bot", f"{whatsapp.PREFIXO_BOT} Luz vence amanhã")]))
+
+    async def nao_deve_chamar(*args, **kwargs):
+        raise AssertionError("mensagem do bot não deveria ir para a IA")
+
+    monkeypatch.setattr(ia, "extrair_contas_de_texto", nao_deve_chamar)
+    _rodar(cfg, db)
+    assert db.mensagem_processada("bot")

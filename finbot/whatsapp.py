@@ -37,6 +37,8 @@ MAX_ROLAGENS = 60  # quantas vezes a conversa é rolada para cima
 TEMPO_CARREGAR_S = 90  # espera o WhatsApp Web carregar
 QR_TENTATIVAS = 4  # o QR é reenviado enquanto espera a leitura
 QR_INTERVALO_S = 25  # o QR muda a cada ~20 s
+# Prefixo das mensagens que o próprio bot manda no grupo; elas não são lidas como contas.
+PREFIXO_BOT = "🤖 finbot:"
 
 # "[09:15, 16/10/2026] Maria Eduarda: " — atributo data-pre-plain-text do WhatsApp Web
 _CABECALHO = re.compile(
@@ -142,22 +144,10 @@ async def coletar_grupo(
             ),
         )
 
-    perfil.mkdir(parents=True, exist_ok=True)
     desde = agora - timedelta(hours=janela_horas)
     try:
         async with async_playwright() as p:
-            contexto = await p.chromium.launch_persistent_context(
-                user_data_dir=str(perfil),
-                headless=True,
-                viewport={"width": 1280, "height": 900},
-                user_agent=USER_AGENT,
-                locale="pt-BR",
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
+            contexto = await _abrir_navegador(p, perfil)
             try:
                 pagina = contexto.pages[0] if contexto.pages else await contexto.new_page()
                 return await _coletar(pagina, nome_grupo, desde, agora, enviar_qr, url)
@@ -166,6 +156,72 @@ async def coletar_grupo(
     except Exception as exc:  # o navegador não pode derrubar o bot
         log.exception("Falha ao ler o grupo do WhatsApp")
         return ColetaWhatsApp("erro", erro=f"{type(exc).__name__}: {exc}")
+
+
+async def enviar_ao_grupo(
+    nome_grupo: str,
+    perfil: Path,
+    textos: list[str],
+    url: str = URL_WHATSAPP,
+) -> bool:
+    """Manda mensagens no grupo usando a sessão já conectada. Não pede QR code:
+    se o WhatsApp não estiver conectado, só devolve False."""
+    textos = [t for t in textos if t.strip()]
+    if not textos:
+        return True
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        return False
+    try:
+        async with async_playwright() as p:
+            contexto = await _abrir_navegador(p, perfil)
+            try:
+                pagina = contexto.pages[0] if contexto.pages else await contexto.new_page()
+                await pagina.goto(url, wait_until="domcontentloaded", timeout=60_000)
+                if await _aguardar_estado(pagina, TEMPO_CARREGAR_S) != "logado":
+                    return False
+                await asyncio.sleep(3)
+                if not await _abrir_grupo(pagina, nome_grupo):
+                    return False
+                for texto in textos:
+                    await _digitar_e_enviar(pagina, f"{PREFIXO_BOT} {texto}")
+                await asyncio.sleep(3)  # dá tempo para as mensagens saírem
+                return True
+            finally:
+                await contexto.close()
+    except Exception:
+        log.exception("Falha ao enviar mensagem no grupo do WhatsApp")
+        return False
+
+
+async def _abrir_navegador(p, perfil: Path):
+    perfil.mkdir(parents=True, exist_ok=True)
+    return await p.chromium.launch_persistent_context(
+        user_data_dir=str(perfil),
+        headless=True,
+        viewport={"width": 1280, "height": 900},
+        user_agent=USER_AGENT,
+        locale="pt-BR",
+        args=[
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-blink-features=AutomationControlled",
+        ],
+    )
+
+
+async def _digitar_e_enviar(pagina, texto: str) -> None:
+    """Digita na caixa da conversa; Shift+Enter quebra linha, Enter envia."""
+    caixa = pagina.locator('footer div[contenteditable="true"]').last
+    await caixa.click()
+    for i, linha in enumerate(texto.split("\n")):
+        if i:
+            await pagina.keyboard.press("Shift+Enter")
+        if linha:
+            await pagina.keyboard.insert_text(linha)
+    await pagina.keyboard.press("Enter")
+    await asyncio.sleep(1)
 
 
 async def _coletar(pagina, nome_grupo: str, desde: datetime, agora: datetime,

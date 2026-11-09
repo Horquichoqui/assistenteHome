@@ -66,6 +66,11 @@ async def sincronizar(
         return ResultadoSincronizacao(coleta.status, f"Não consegui ler o WhatsApp: {coleta.erro}")
 
     novas = [m for m in coleta.mensagens if not db.mensagem_processada(m.chave)]
+    # As mensagens que o próprio bot mandou no grupo não são analisadas.
+    db.marcar_mensagens_processadas(
+        [m.chave for m in novas if m.texto.startswith(whatsapp.PREFIXO_BOT)]
+    )
+    novas = [m for m in novas if not m.texto.startswith(whatsapp.PREFIXO_BOT)]
     textos = [m for m in novas if m.print_png is None and m.texto]
     imagens = [m for m in novas if m.print_png is not None]
 
