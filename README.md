@@ -259,6 +259,25 @@ Como as contas são atualizadas:
    você só precisa escanear de novo se o WhatsApp desconectar o aparelho. Se o
    QR expirar, o bot envia outro.
 
+**Avisos no próprio grupo:** com `WHATSAPP_AVISAR=1` (padrão), o relatório da
+leitura e o alerta das contas que vencem também são mandados no grupo, com o
+prefixo "🤖 finbot:". Saem da sua própria conta (a do QR code), e o bot ignora as
+próprias mensagens na leitura seguinte.
+
+## Planilha do Google (opcional, gratuito)
+
+Além do `.xlsx` do `/planilha`, o bot pode manter uma planilha do Google Sheets
+atualizada: uma aba por mês ("2026-11"), com os gastos no mês da compra (cada
+parcela no seu mês) e as contas do grupo no mês do vencimento. Ela é atualizada
+depois de cada leitura do WhatsApp, todo dia às 9h e a cada `/planilha`. As abas
+mensais são reescritas a partir do banco; não edite à mão dentro delas.
+
+1. Em console.cloud.google.com, crie um projeto, ative a **Google Sheets API**,
+   crie uma **conta de serviço** e baixe a chave JSON (tudo gratuito).
+2. Copie a chave para a VM em `data/google-credenciais.json`.
+3. Compartilhe a planilha com o e-mail da conta de serviço como **Editor**.
+4. No `.env`: `GOOGLE_SHEETS_ID=<link ou id da planilha>` e reinicie o bot.
+
 **Atenção**
 
 - A automação do WhatsApp Web não é permitida pelos Termos de Uso do WhatsApp.
@@ -295,6 +314,7 @@ finbot/
   planilha.py        # geração do Excel
   whatsapp.py        # leitura do grupo pelo WhatsApp Web (Playwright)
   contas_whatsapp.py # transforma as mensagens do grupo em contas a pagar
+  sheets.py          # espelha os dados numa planilha do Google (opcional)
 tests/               # testes de banco, estatísticas, planilha, WhatsApp e contas
 ```
 
