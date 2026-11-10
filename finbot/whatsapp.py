@@ -269,7 +269,16 @@ async def _aguardar_estado(pagina, segundos: int) -> str:
 async def _aguardar_login(pagina, enviar_qr) -> str:
     """Envia o QR code e espera a leitura pelo celular; reenvia porque ele muda sozinho."""
     for _ in range(QR_TENTATIVAS):
-        png = await pagina.locator("canvas").first.screenshot()
+        # O WhatsApp troca o canvas ao renovar o QR ou ao processar uma leitura;
+        # se ele sumir, continua esperando em vez de derrubar a leitura toda.
+        try:
+            png = await pagina.locator("canvas").first.screenshot(timeout=60_000)
+        except Exception:
+            if await pagina.locator("#pane-side").count():
+                return "logado"
+            texto = (await pagina.inner_text("body"))[:200].replace("\n", " | ")
+            log.warning("QR code não apareceu; tela do WhatsApp: %s", texto)
+            continue
         await enviar_qr(png)
         for _ in range(QR_INTERVALO_S):
             await asyncio.sleep(1)
