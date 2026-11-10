@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Awaitable, Callable, Optional
 
-from . import ia, stats, whatsapp
+from . import ia, sheets, stats, whatsapp
 from .config import Config
 from .db import ContaAPagar, Database
 
@@ -35,6 +35,7 @@ class ResultadoSincronizacao:
     status: str  # "ok" ou o status de erro vindo da coleta
     texto: str
     prints: list[tuple[bytes, str]] = field(default_factory=list)  # (png, legenda)
+    planilha: list[sheets.ItemPlanilha] = field(default_factory=list)  # para a aba do mês
 
 
 async def sincronizar(
@@ -76,6 +77,9 @@ async def sincronizar(
 
     contagem = {"criadas": 0, "atualizadas": 0, "pagas": 0, "sem_vencimento": 0, "falhas": 0}
     anotadas: list[str] = []  # uma linha por conta lida nesta leitura
+    planilha: list[sheets.ItemPlanilha] = []
+    if textos or imagens:
+        ia.CONTEXTO_PLANILHA = await asyncio.to_thread(sheets.ler_contexto, cfg, hoje)
     prints: list[tuple[bytes, str]] = []
     processadas: list[str] = []
     chamadas = 0
@@ -93,7 +97,7 @@ async def sincronizar(
             log.exception("Falha ao analisar um lote de mensagens do WhatsApp")
             contagem["falhas"] += 1
             continue  # sem marcar: a análise é refeita na próxima leitura
-        _registrar(db, itens, hoje, contagem, anotadas)
+        _registrar(db, itens, hoje, contagem, anotadas, planilha)
         processadas.extend(m.chave for m in lote)
 
     # 2) Imagens: uma chamada por imagem (boleto, comprovante, nota).
@@ -113,7 +117,7 @@ async def sincronizar(
             contagem["falhas"] += 1
             continue
         processadas.append(m.chave)
-        contas_da_imagem = _registrar(db, itens, hoje, contagem, anotadas)
+        contas_da_imagem = _registrar(db, itens, hoje, contagem, anotadas, planilha)
         if contas_da_imagem:  # o print só vai para o Telegram se tiver conta nele
             prints.append((m.print_png, f"📸 {m.remetente} · {m.momento:%d/%m %H:%M}"))
 
@@ -122,7 +126,7 @@ async def sincronizar(
     texto = _montar_texto(cfg, db, hoje, coleta.mensagens, novas, contagem)
     if anotadas:
         texto += "\n\n📝 Anotado nesta leitura:\n" + "\n".join(anotadas)
-    return ResultadoSincronizacao("ok", texto, prints)
+    return ResultadoSincronizacao("ok", texto, prints, planilha)
 
 
 def alertas_contas(db: Database, hoje: date) -> list[str]:
@@ -159,7 +163,8 @@ def formatar_contas(contas: list[ContaAPagar]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 def _registrar(db: Database, itens, hoje: date, contagem: dict[str, int],
-               anotadas: Optional[list[str]] = None) -> int:
+               anotadas: Optional[list[str]] = None,
+               planilha: Optional[list] = None) -> int:
     """Grava as contas extraídas. Retorna quantas contas foram registradas."""
     registradas = 0
     for item in itens:
@@ -174,6 +179,11 @@ def _registrar(db: Database, itens, hoje: date, contagem: dict[str, int],
             descricao, vencimento, _centavos(item.valor), pago=item.pago, forma=item.forma
         )
         contagem["criadas" if resultado == "criada" else "atualizadas"] += 1
+        if planilha is not None:
+            planilha.append(sheets.ItemPlanilha(
+                descricao, vencimento, _centavos(item.valor) and _centavos(item.valor) / 100,
+                item.forma, item.pago, item.categoria, item.responsavel,
+            ))
         if anotadas is not None:
             valor = stats.formatar_reais(_centavos(item.valor)) if _centavos(item.valor) else "valor a confirmar"
             situacao = "nova" if resultado == "criada" else "já anotada antes (sem duplicar)"

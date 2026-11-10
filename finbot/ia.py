@@ -69,6 +69,8 @@ class ContaExtraida(BaseModel):
     vencimento: Optional[str] = None  # YYYY-MM-DD
     pago: bool = False  # true se a mensagem disser que a conta já foi paga
     forma: Optional[str] = None  # "Pix", "Boleto", nome do cartão; nulo se não souber
+    categoria: Optional[str] = None  # uma das categorias da planilha
+    responsavel: Optional[str] = None  # pessoa da planilha ou "Combinado"
 
 
 class ListaContas(BaseModel):
@@ -167,8 +169,12 @@ async def interpretar_texto(
     )
 
 
+# Fixos, categorias e responsáveis da aba do mês; definido antes de cada leitura do grupo.
+CONTEXTO_PLANILHA = ""
+
+
 def _instrucoes_contas(hoje: date) -> str:
-    return (
+    return CONTEXTO_PLANILHA + "\n" + (
         "Você analisa mensagens de um grupo de WhatsApp de um casal e identifica "
         "CONTAS A PAGAR da casa (luz, água, gás, internet, aluguel, condomínio, "
         "boletos, faturas, assinaturas etc.). Valores em reais. Hoje é "

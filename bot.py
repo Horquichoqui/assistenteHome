@@ -692,11 +692,11 @@ async def _rodar_whatsapp(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         agora = datetime.now(pytz.timezone(cfg.timezone)).replace(tzinfo=None)
         resultado = await contas_whatsapp.sincronizar(cfg, db, agora, _hoje(cfg), enviar_qr)
-        if resultado.status == "ok" and cfg.sheets_id:
-            # A planilha é reescrita a partir do banco: cada conta aparece uma vez só.
-            erro = await asyncio.to_thread(sheets.sincronizar, db, cfg)
+        if resultado.status == "ok" and cfg.sheets_id and resultado.planilha:
+            # Preenche a aba do mês (Jan..Dez) no padrão do casal, sem duplicar linhas.
+            feitos, erro = await asyncio.to_thread(sheets.anotar_no_mes, cfg, resultado.planilha)
             resultado.texto += "\n\n📊 Planilha: " + (
-                "✅ exportada (aba do mês atualizada)" if not erro else f"⚠️ NÃO exportada: {erro}"
+                "✅ exportada\n" + "\n".join(feitos) if not erro else f"⚠️ NÃO exportada: {erro}"
             )
         await _enviar_para_todos(context, chats, resultado.texto)
         for png, legenda in resultado.prints:
