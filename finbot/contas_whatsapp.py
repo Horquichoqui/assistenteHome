@@ -75,6 +75,7 @@ async def sincronizar(
     imagens = [m for m in novas if m.print_png is not None]
 
     contagem = {"criadas": 0, "atualizadas": 0, "pagas": 0, "sem_vencimento": 0, "falhas": 0}
+    anotadas: list[str] = []  # uma linha por conta lida nesta leitura
     prints: list[tuple[bytes, str]] = []
     processadas: list[str] = []
     chamadas = 0
@@ -92,7 +93,7 @@ async def sincronizar(
             log.exception("Falha ao analisar um lote de mensagens do WhatsApp")
             contagem["falhas"] += 1
             continue  # sem marcar: a análise é refeita na próxima leitura
-        _registrar(db, itens, hoje, contagem)
+        _registrar(db, itens, hoje, contagem, anotadas)
         processadas.extend(m.chave for m in lote)
 
     # 2) Imagens: uma chamada por imagem (boleto, comprovante, nota).
@@ -112,13 +113,15 @@ async def sincronizar(
             contagem["falhas"] += 1
             continue
         processadas.append(m.chave)
-        contas_da_imagem = _registrar(db, itens, hoje, contagem)
+        contas_da_imagem = _registrar(db, itens, hoje, contagem, anotadas)
         if contas_da_imagem:  # o print só vai para o Telegram se tiver conta nele
             prints.append((m.print_png, f"📸 {m.remetente} · {m.momento:%d/%m %H:%M}"))
 
     db.marcar_mensagens_processadas(processadas)
 
     texto = _montar_texto(cfg, db, hoje, coleta.mensagens, novas, contagem)
+    if anotadas:
+        texto += "\n\n📝 Anotado nesta leitura:\n" + "\n".join(anotadas)
     return ResultadoSincronizacao("ok", texto, prints)
 
 
@@ -155,7 +158,8 @@ def formatar_contas(contas: list[ContaAPagar]) -> list[str]:
 
 # ---------------------------------------------------------------------------
 
-def _registrar(db: Database, itens, hoje: date, contagem: dict[str, int]) -> int:
+def _registrar(db: Database, itens, hoje: date, contagem: dict[str, int],
+               anotadas: Optional[list[str]] = None) -> int:
     """Grava as contas extraídas. Retorna quantas contas foram registradas."""
     registradas = 0
     for item in itens:
@@ -170,6 +174,10 @@ def _registrar(db: Database, itens, hoje: date, contagem: dict[str, int]) -> int
             descricao, vencimento, _centavos(item.valor), pago=item.pago, forma=item.forma
         )
         contagem["criadas" if resultado == "criada" else "atualizadas"] += 1
+        if anotadas is not None:
+            valor = stats.formatar_reais(_centavos(item.valor)) if _centavos(item.valor) else "valor a confirmar"
+            situacao = "nova" if resultado == "criada" else "já anotada antes (sem duplicar)"
+            anotadas.append(f"{len(anotadas) + 1}. {descricao} · {item.forma or 'forma ?'} · {valor} · {situacao}")
         if item.pago:
             contagem["pagas"] += 1
         registradas += 1

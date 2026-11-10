@@ -77,6 +77,7 @@ def test_texto_cria_contas_e_nao_reprocessa_as_mensagens(monkeypatch, cfg, db):
     resultado = _rodar(cfg, db)
     assert resultado.status == "ok"
     assert "2 nova(s)" in resultado.texto
+    assert "1. Luz · forma ? · R$ 180,00 · nova" in resultado.texto
     assert len(chamadas) == 1 and len(chamadas[0]) == 2
     assert [(c.descricao, c.valor_centavos, c.pago) for c in _contas_out(db)] == [
         ("Luz", 18000, False),

@@ -692,13 +692,17 @@ async def _rodar_whatsapp(context: ContextTypes.DEFAULT_TYPE) -> None:
 
         agora = datetime.now(pytz.timezone(cfg.timezone)).replace(tzinfo=None)
         resultado = await contas_whatsapp.sincronizar(cfg, db, agora, _hoje(cfg), enviar_qr)
+        if resultado.status == "ok" and cfg.sheets_id:
+            # A planilha é reescrita a partir do banco: cada conta aparece uma vez só.
+            erro = await asyncio.to_thread(sheets.sincronizar, db, cfg)
+            resultado.texto += "\n\n📊 Planilha: " + (
+                "✅ exportada (aba do mês atualizada)" if not erro else f"⚠️ NÃO exportada: {erro}"
+            )
         await _enviar_para_todos(context, chats, resultado.texto)
         for png, legenda in resultado.prints:
             await _enviar_foto_para_todos(context, chats, png, legenda)
         if resultado.status == "ok" and cfg.whatsapp_avisar:
             await whatsapp.enviar_ao_grupo(cfg.whatsapp_grupo, cfg.whatsapp_perfil, [resultado.texto])
-
-    await _atualizar_planilha_google(context, chats)
 
 
 async def _atualizar_planilha_google(context: ContextTypes.DEFAULT_TYPE, chats: list[int]) -> None:
