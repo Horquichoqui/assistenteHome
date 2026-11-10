@@ -35,7 +35,7 @@ USER_AGENT = (
 )
 MAX_IMAGENS = 12  # prints por leitura (limita o uso da IA)
 MAX_ROLAGENS = 60  # quantas vezes a conversa é rolada para cima
-TEMPO_CARREGAR_S = 90  # espera o WhatsApp Web carregar
+TEMPO_CARREGAR_S = 180  # espera o WhatsApp Web carregar (VM de 1 GB é lenta)
 TEMPO_SINCRONIZAR_S = 20 * 60  # 1ª sincronização após ler o QR ("Carregando suas conversas")
 QR_TENTATIVAS = 4  # o QR é reenviado enquanto espera a leitura
 QR_INTERVALO_S = 25  # o QR muda a cada ~20 s
@@ -244,6 +244,7 @@ async def _coletar(pagina, nome_grupo: str, desde: datetime, agora: datetime,
         return ColetaWhatsApp("precisa_login")
 
     await asyncio.sleep(3)  # dá tempo para a lista de conversas aparecer
+    await pagina.keyboard.press("Escape")  # fecha avisos como "Novidades do WhatsApp Web"
     if not await _abrir_grupo(pagina, nome_grupo):
         return ColetaWhatsApp("grupo_nao_encontrado")
     await _carregar_historico(pagina, desde)
@@ -259,8 +260,8 @@ async def _estado(pagina) -> str:
 
 
 async def _sincronizando(pagina) -> bool:
-    """Tela "Carregando suas conversas": logo após ler o QR, a 1ª sincronização demora minutos."""
-    return bool(await pagina.get_by_text("Carregando suas conversas").count())
+    """Telas de sincronização ("Carregando suas conversas", "Não feche esta janela"): demoram minutos."""
+    return bool(await pagina.get_by_text(re.compile("Carregando suas conversas|Não feche esta janela")).count())
 
 
 async def _aguardar_estado(pagina, segundos: int) -> str:
@@ -301,16 +302,21 @@ async def _aguardar_login(pagina, enviar_qr) -> str:
 
 
 async def _abrir_grupo(pagina, nome_grupo: str) -> bool:
-    caixa = pagina.locator('div[contenteditable="true"][data-tab="3"]').first
+    # Busca de conversas: <input> no WhatsApp Web atual, div editável nas versões antigas.
+    caixa = pagina.locator(
+        'input[aria-label^="Pesquisar"], div[contenteditable="true"][data-tab="3"]'
+    ).first
     await caixa.click()
     await pagina.keyboard.insert_text(nome_grupo)
     for _ in range(10):
         await asyncio.sleep(1)
-        titulos = pagina.locator("#pane-side span[title]")
-        for i in range(await titulos.count()):
-            item = titulos.nth(i)
-            if mesmo_nome_de_grupo(await item.get_attribute("title"), nome_grupo):
-                await item.click()
+        # Lê os títulos de uma vez: a lista é redesenhada enquanto a busca filtra.
+        titulos = await pagina.locator("#pane-side span[title]").evaluate_all(
+            "els => els.map(e => e.title)"
+        )
+        for titulo in titulos:
+            if mesmo_nome_de_grupo(titulo, nome_grupo):
+                await pagina.locator("#pane-side").get_by_title(titulo, exact=True).first.click()
                 await pagina.locator("#main").wait_for(timeout=20_000)
                 await asyncio.sleep(2)
                 return True
