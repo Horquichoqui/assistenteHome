@@ -36,6 +36,7 @@ USER_AGENT = (
 MAX_IMAGENS = 12  # prints por leitura (limita o uso da IA)
 MAX_ROLAGENS = 60  # quantas vezes a conversa é rolada para cima
 TEMPO_CARREGAR_S = 90  # espera o WhatsApp Web carregar
+TEMPO_SINCRONIZAR_S = 20 * 60  # 1ª sincronização após ler o QR ("Carregando suas conversas")
 QR_TENTATIVAS = 4  # o QR é reenviado enquanto espera a leitura
 QR_INTERVALO_S = 25  # o QR muda a cada ~20 s
 # Prefixo das mensagens que o próprio bot manda no grupo; elas não são lidas como contas.
@@ -257,11 +258,21 @@ async def _estado(pagina) -> str:
     return "carregando"
 
 
+async def _sincronizando(pagina) -> bool:
+    """Tela "Carregando suas conversas": logo após ler o QR, a 1ª sincronização demora minutos."""
+    return bool(await pagina.get_by_text("Carregando suas conversas").count())
+
+
 async def _aguardar_estado(pagina, segundos: int) -> str:
-    fim = time.monotonic() + segundos
+    inicio = time.monotonic()
     while True:
         estado = await _estado(pagina)
-        if estado != "carregando" or time.monotonic() > fim:
+        if estado != "carregando":
+            return estado
+        decorrido = time.monotonic() - inicio
+        if decorrido > segundos and not (
+            decorrido < TEMPO_SINCRONIZAR_S and await _sincronizando(pagina)
+        ):
             return estado
         await asyncio.sleep(1)
 
@@ -274,8 +285,8 @@ async def _aguardar_login(pagina, enviar_qr) -> str:
         try:
             png = await pagina.locator("canvas").first.screenshot(timeout=60_000)
         except Exception:
-            if await pagina.locator("#pane-side").count():
-                return "logado"
+            if await pagina.locator("#pane-side").count() or await _sincronizando(pagina):
+                return await _aguardar_estado(pagina, TEMPO_CARREGAR_S)
             texto = (await pagina.inner_text("body"))[:200].replace("\n", " | ")
             log.warning("QR code não apareceu; tela do WhatsApp: %s", texto)
             continue
@@ -284,6 +295,8 @@ async def _aguardar_login(pagina, enviar_qr) -> str:
             await asyncio.sleep(1)
             if await pagina.locator("#pane-side").count():
                 return "logado"
+            if await _sincronizando(pagina):  # QR lido; espera a sincronização
+                return await _aguardar_estado(pagina, TEMPO_CARREGAR_S)
     return "qr"
 
 

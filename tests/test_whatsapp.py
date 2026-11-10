@@ -147,3 +147,24 @@ def test_enviar_ao_grupo_sem_textos_nao_abre_navegador(tmp_path):
     from finbot.whatsapp import enviar_ao_grupo
 
     assert asyncio.run(enviar_ao_grupo("Grupo", tmp_path / "perfil", ["", "  "])) is True
+
+
+def test_espera_a_sincronizacao_depois_do_qr_alem_do_tempo_de_carregar():
+    """Após ler o QR, "Carregando suas conversas" pode passar do tempo normal de carga."""
+    from playwright.async_api import async_playwright
+
+    from finbot.whatsapp import _aguardar_estado
+
+    async def rodar():
+        async with async_playwright() as p:
+            navegador = await p.chromium.launch()
+            pagina = await navegador.new_page()
+            await pagina.set_content(
+                "<div id='s'>Carregando suas conversas</div><script>setTimeout(() => "
+                "{document.body.innerHTML = '<div id=\"pane-side\"></div>'}, 3000)</script>"
+            )
+            estado = await _aguardar_estado(pagina, 1)  # 1 s de carga normal; sincroniza em 3 s
+            await navegador.close()
+            return estado
+
+    assert asyncio.run(rodar()) == "logado"
