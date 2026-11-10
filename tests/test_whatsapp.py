@@ -168,3 +168,11 @@ def test_espera_a_sincronizacao_depois_do_qr_alem_do_tempo_de_carregar():
             return estado
 
     assert asyncio.run(rodar()) == "logado"
+
+
+def test_herdar_cabecalho_usa_hora_da_bolha_e_vira_o_dia():
+    from finbot.whatsapp import _herdar_cabecalho
+
+    anterior = (datetime(2026, 11, 9, 20, 21), "Gabriel Job")
+    assert _herdar_cabecalho(anterior, "20:31") == (datetime(2026, 11, 9, 20, 31), "Gabriel Job")
+    assert _herdar_cabecalho(anterior, "00:05") == (datetime(2026, 11, 10, 0, 5), "Gabriel Job")

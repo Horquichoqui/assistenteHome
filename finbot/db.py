@@ -152,6 +152,7 @@ class ContaAPagar:
     pago: bool
     pago_em: Optional[str]
     origem: str
+    forma: Optional[str] = None  # Pix, boleto, cartão...
 
     @property
     def valor(self) -> Optional[float]:
@@ -173,6 +174,9 @@ class Database:
         for nome, tipo_sql in _COLUNAS_NOVAS_GASTOS.items():
             if nome not in colunas_existentes:
                 conn.execute(f"ALTER TABLE gastos ADD COLUMN {nome} {tipo_sql}")
+        contas = {row["name"] for row in conn.execute("PRAGMA table_info(contas_a_pagar)")}
+        if "forma" not in contas:
+            conn.execute("ALTER TABLE contas_a_pagar ADD COLUMN forma TEXT")
 
     @contextmanager
     def _conectar(self) -> Iterator[sqlite3.Connection]:
@@ -460,6 +464,7 @@ class Database:
         valor_centavos: Optional[int] = None,
         pago: bool = False,
         origem: str = "whatsapp",
+        forma: Optional[str] = None,
     ) -> str:
         """Cria a conta ou atualiza a existente (mesma descrição no mesmo mês).
 
@@ -478,8 +483,8 @@ class Database:
                 conn.execute(
                     """INSERT INTO contas_a_pagar
                        (chave, descricao, valor_centavos, vencimento, pago, pago_em,
-                        origem, atualizado_em)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        origem, atualizado_em, forma)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         chave,
                         descricao,
@@ -489,6 +494,7 @@ class Database:
                         agora if pago else None,
                         origem,
                         agora,
+                        forma,
                     ),
                 )
                 return "criada"
@@ -497,7 +503,8 @@ class Database:
             pago_agora = agora if pago and not existente["pago"] else None
             conn.execute(
                 """UPDATE contas_a_pagar SET valor_centavos = ?, vencimento = ?, pago = ?,
-                     pago_em = COALESCE(?, pago_em), atualizado_em = ?
+                     pago_em = COALESCE(?, pago_em), atualizado_em = ?,
+                     forma = COALESCE(?, forma)
                    WHERE id = ?""",
                 (
                     novo_valor,
@@ -505,6 +512,7 @@ class Database:
                     1 if ja_paga else 0,
                     pago_agora,
                     agora,
+                    forma,
                     existente["id"],
                 ),
             )
@@ -605,6 +613,7 @@ def _conta(row: sqlite3.Row) -> ContaAPagar:
         pago=bool(row["pago"]),
         pago_em=row["pago_em"],
         origem=row["origem"],
+        forma=row["forma"],
     )
 
 

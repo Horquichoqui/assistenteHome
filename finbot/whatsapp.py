@@ -15,6 +15,7 @@ podem precisar de ajuste quando ele mudar.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import logging
 import re
@@ -49,7 +50,7 @@ _CABECALHO = re.compile(
 
 # Linhas (mensagens) abertas na conversa. Cada linha recebe um atributo
 # data-finbot-linha para podermos tirar o print dela depois.
-_JS_LINHAS = """() => {
+_JS_LINHAS = r"""() => {
     let linhas = Array.from(document.querySelectorAll('#main div[role="row"]'));
     if (!linhas.length) linhas = Array.from(document.querySelectorAll('#main div[data-id]'));
     return linhas.map((row, indice) => {
@@ -60,9 +61,24 @@ _JS_LINHAS = """() => {
             indice: indice,
             pre: pre ? pre.getAttribute('data-pre-plain-text') : null,
             texto: texto ? texto.innerText.trim() : '',
-            imagem: !!row.querySelector('img[src^="blob:"]'),
+            // Imagem ainda não carregada fica sem src; avatares usam https e emojis data:.
+            imagem: Array.from(row.querySelectorAll('img')).some(i => {
+                const src = i.getAttribute('src') || '';
+                return src.startsWith('blob:') || src === '';
+            }),
+            // Mídia (foto, PDF) vem sem cabeçalho; a hora fica no rodapé da bolha.
+            hora: ((row.innerText.match(/(\d{1,2}:\d{2})(?!.*\d{1,2}:\d{2})/s) || [])[1]) || null,
         };
     });
+}"""
+
+# Imagem inteira (resolução original) de uma bolha, em PNG base64; null se não carregou.
+_JS_IMAGEM_PNG = """img => {
+    if (!img.complete || !img.naturalWidth) return null;
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth; c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c.toDataURL('image/png');
 }"""
 
 # Primeira mensagem com cabeçalho na conversa (para saber se já chegamos ao limite).
@@ -211,6 +227,8 @@ async def _abrir_navegador(p, perfil: Path):
         viewport={"width": 1280, "height": 900},
         user_agent=USER_AGENT.format(versao=versao),
         locale="pt-BR",
+        # shortcut: fuso fixo do casal; se o bot servir outro fuso, passar cfg.timezone até aqui
+        timezone_id="America/Sao_Paulo",
         args=[
             "--no-sandbox",
             "--disable-dev-shm-usage",
@@ -350,12 +368,16 @@ async def _ler_mensagens(pagina, desde: datetime, agora: datetime) -> list[Mensa
     # 1) Identifica cada mensagem na ordem do chat, para que a chave seja estável.
     entradas = []
     contagem: dict[str, int] = {}
+    ultimo: Optional[tuple[datetime, str]] = None
     for linha in linhas:
-        if not linha["pre"] and not linha["imagem"]:
-            continue  # aviso do sistema, data, "criou o grupo" etc.
         cabecalho = parsear_cabecalho(linha["pre"]) if linha["pre"] else None
-        momento, remetente = cabecalho if cabecalho else (agora, "desconhecido")
-        base = f"{linha['pre'] or ''}|{linha['texto']}|{int(linha['imagem'])}"
+        if cabecalho is None and linha.get("hora") and ultimo:
+            cabecalho = _herdar_cabecalho(ultimo, linha["hora"])
+        if cabecalho is None:
+            continue  # aviso do sistema, data, "criou o grupo", ou sem como datar
+        ultimo = cabecalho
+        momento, remetente = cabecalho
+        base = f"{momento:%Y-%m-%d %H:%M}|{remetente}|{linha['texto']}|{int(linha['imagem'])}"
         n = contagem.get(base, 0)
         contagem[base] = n + 1
         chave = hashlib.sha256(f"{base}|{n}".encode("utf-8")).hexdigest()[:32]
@@ -369,7 +391,15 @@ async def _ler_mensagens(pagina, desde: datetime, agora: datetime) -> list[Mensa
             continue
         try:
             locator = pagina.locator(f'[data-finbot-linha="{linha["indice"]}"]')
-            prints[chave] = await locator.screenshot()
+            await locator.scroll_into_view_if_needed()  # a imagem só carrega quando aparece
+            try:
+                await locator.locator('img[src^="blob:"]').last.wait_for(timeout=15_000)
+            except Exception:
+                pass  # sem imagem carregada: fica o print da bolha
+            # A bolha mostra a imagem cortada; a imagem inteira tem o valor e a data.
+            blobs = locator.locator('img[src^="blob:"]')
+            dados = await blobs.last.evaluate(_JS_IMAGEM_PNG) if await blobs.count() else None
+            prints[chave] = base64.b64decode(dados.split(",", 1)[1]) if dados else await locator.screenshot()
         except Exception:
             log.warning("Não consegui capturar o print de uma imagem do grupo", exc_info=True)
 
@@ -377,3 +407,13 @@ async def _ler_mensagens(pagina, desde: datetime, agora: datetime) -> list[Mensa
         MensagemWhatsApp(chave, momento, remetente, linha["texto"], prints.get(chave))
         for linha, momento, remetente, chave in entradas
     ]
+
+
+def _herdar_cabecalho(anterior: tuple[datetime, str], hora: str) -> tuple[datetime, str]:
+    """Data e remetente da mensagem anterior com a hora do rodapé da bolha."""
+    momento, remetente = anterior
+    h, m = (int(x) for x in hora.split(":"))
+    novo = momento.replace(hour=h, minute=m, second=0)
+    if novo < momento - timedelta(minutes=1):  # virou o dia
+        novo += timedelta(days=1)
+    return novo, remetente

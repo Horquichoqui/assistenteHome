@@ -68,3 +68,13 @@ def test_sincronizar_cria_uma_aba_por_mes(tmp_path):
 
 def test_sem_planilha_configurada_nao_faz_nada(tmp_path):
     assert sheets.sincronizar(Database(tmp_path / "t.db"), Config(telegram_token="x")) is None
+
+
+def test_conta_mostra_forma_de_pagamento(tmp_path):
+    from finbot.db import Database
+    from finbot.sheets import linhas_do_mes
+
+    db = Database(tmp_path / "f.db")
+    db.registrar_conta_a_pagar("Nayara", date(2026, 11, 9), 83100, pago=True, forma="Pix")
+    conta = [l for l in linhas_do_mes(db, Config(telegram_token="x"), date(2026, 11, 1), date(2026, 11, 30)) if l and l[0] == "Conta"]
+    assert conta[0][2] == "Nayara" and conta[0][5] == "Pix" and conta[0][7] == 831.0

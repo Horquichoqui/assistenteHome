@@ -167,7 +167,7 @@ def _registrar(db: Database, itens, hoje: date, contagem: dict[str, int]) -> int
             contagem["sem_vencimento"] += 1
             continue
         resultado = db.registrar_conta_a_pagar(
-            descricao, vencimento, _centavos(item.valor), pago=item.pago
+            descricao, vencimento, _centavos(item.valor), pago=item.pago, forma=item.forma
         )
         contagem["criadas" if resultado == "criada" else "atualizadas"] += 1
         if item.pago:
@@ -191,7 +191,9 @@ async def _chamar_ia(fabrica: Callable[[], Awaitable[list]]) -> list:
 
 
 def _limite_atingido(exc: Exception) -> bool:
-    texto = str(exc)
+    texto = f"{type(exc).__name__} {exc}"
+    if "Timeout" in texto:  # a IA às vezes demora; vale tentar de novo
+        return True
     return "429" in texto or "RESOURCE_EXHAUSTED" in texto or "rate limit" in texto.lower()
 
 

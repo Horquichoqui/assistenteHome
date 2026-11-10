@@ -41,7 +41,7 @@ def linhas_do_mes(db: Database, cfg: Config, inicio: date, fim: date) -> list[li
         if not c.pago:
             a_pagar += c.valor_centavos or 0
         linhas.append([
-            "Conta", c.vencimento.strftime("%d/%m/%Y"), c.descricao, "contas", "", "", "",
+            "Conta", c.vencimento.strftime("%d/%m/%Y"), c.descricao, "contas", "", c.forma or "", "",
             c.valor if c.valor is not None else "", "Sim" if c.pago else "Não", c.origem,
         ])
     linhas += [[], ["Total de gastos", "", "", "", "", "", "", total_gastos / 100],

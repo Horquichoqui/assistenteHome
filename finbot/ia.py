@@ -68,6 +68,7 @@ class ContaExtraida(BaseModel):
     valor: Optional[float] = None  # em reais; nulo se a conta não informa valor
     vencimento: Optional[str] = None  # YYYY-MM-DD
     pago: bool = False  # true se a mensagem disser que a conta já foi paga
+    forma: Optional[str] = None  # "Pix", "Boleto", nome do cartão; nulo se não souber
 
 
 class ListaContas(BaseModel):
@@ -182,7 +183,12 @@ def _instrucoes_contas(hoje: date) -> str:
         "- pago: true somente se a mensagem disser que a conta JÁ FOI PAGA ou for "
         "comprovante de pagamento; caso contrário, false. Se já estiver paga e não "
         "houver vencimento, use a data da mensagem.\n"
-        "- Em imagens de boleto ou fatura, leia valor e vencimento impressos."
+        "- Em imagens de boleto ou fatura, leia valor e vencimento impressos.\n"
+        "- Comprovante de Pix ou transferência é sempre um pagamento (pago=true), "
+        "mesmo para pessoa física. descricao: o que o texto da mensagem disser "
+        "(ex.: 'Condomínio'); sem texto, use o nome do destinatário (ex.: 'Nayara'). "
+        "valor: o valor pago no comprovante.\n"
+        "- forma: 'Pix', 'Boleto', 'Transferência' ou o nome do cartão; nulo se não souber."
     )
 
 
