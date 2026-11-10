@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import subprocess
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -30,7 +31,7 @@ log = logging.getLogger(__name__)
 URL_WHATSAPP = "https://web.whatsapp.com/"
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    "(KHTML, like Gecko) Chrome/{versao}.0.0.0 Safari/537.36"
 )
 MAX_IMAGENS = 12  # prints por leitura (limita o uso da IA)
 MAX_ROLAGENS = 60  # quantas vezes a conversa é rolada para cima
@@ -197,11 +198,17 @@ async def enviar_ao_grupo(
 
 async def _abrir_navegador(p, perfil: Path):
     perfil.mkdir(parents=True, exist_ok=True)
+    # O user agent precisa bater com a versão real do Chromium (cabeçalho Sec-CH-UA);
+    # versão divergente ou "HeadlessChrome" faz o WhatsApp recusar vincular o aparelho.
+    saida = subprocess.run([p.chromium.executable_path, "--version"],
+                           capture_output=True, text=True, check=True).stdout
+    versao = re.search(r"(\d+)\.\d+", saida).group(1)
     return await p.chromium.launch_persistent_context(
         user_data_dir=str(perfil),
+        channel="chromium",  # Chromium completo, não o headless-shell
         headless=True,
         viewport={"width": 1280, "height": 900},
-        user_agent=USER_AGENT,
+        user_agent=USER_AGENT.format(versao=versao),
         locale="pt-BR",
         args=[
             "--no-sandbox",
